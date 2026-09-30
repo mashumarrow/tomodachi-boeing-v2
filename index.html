@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campus Clinic Finder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Campus Clinic Finder</p>
+          <h1>空きコマで行ける病院を探す</h1>
+        </div>
+        <div class="status-pill" id="visitStatus">受診予定なし</div>
+      </header>
+
+      <main>
+        <section class="screen active" id="screen-search" aria-labelledby="search-title">
+          <div class="screen-heading">
+            <div>
+              <h2 id="search-title">病院を探す</h2>
+              <p>空き時間に行ける病院を検索します。</p>
+            </div>
+          </div>
+
+          <form class="search-panel" id="searchForm">
+            <label class="search-field">
+              <span class="field-label">出発地点</span>
+              <select id="originType" aria-label="出発地点">
+                <option value="miyazaki">宮崎大学 木花キャンパス</option>
+                <option value="imadegawa">同志社大学 今出川キャンパス</option>
+                <option value="current">現在地を使う</option>
+              </select>
+              <span class="field-help" id="locationStatus">検索時にOSRMで道路経路を計算します</span>
+            </label>
+
+            <label class="search-field">
+              <span class="field-label">探す施設</span>
+              <select id="facilityType" aria-label="施設の種類">
+                <option value="medical">病院・診療所</option>
+                <option value="pharmacy">薬局</option>
+              </select>
+            </label>
+
+            <label class="search-field" id="departmentField">
+              <span class="field-label">診療科</span>
+              <select id="department" aria-label="診療科">
+                <option value="internal">内科</option>
+                <option value="dermatology">皮膚科</option>
+                <option value="eye">眼科</option>
+                <option value="ent">耳鼻咽喉科</option>
+                <option value="gynecology">婦人科</option>
+              </select>
+            </label>
+
+            <fieldset class="search-field">
+              <legend class="field-label">いつ出発しますか？</legend>
+              <input id="when" type="hidden" value="now" />
+              <div class="choice-grid choice-grid-two" aria-label="出発タイミング">
+                <button class="choice-button active" type="button" data-when="now" aria-pressed="true">
+                  今すぐ
+                </button>
+                <button class="choice-button" type="button" data-when="time" aria-pressed="false">
+                  時間を指定
+                </button>
+              </div>
+            </fieldset>
+
+            <label class="search-field scheduled-time" id="scheduledTimeField" hidden>
+              <span class="field-label">出発時刻</span>
+              <input id="startTime" type="time" value="13:30" />
+            </label>
+
+            <label class="search-field">
+              <span class="field-label">何時までに戻りますか？</span>
+              <input id="returnTime" type="time" value="14:50" />
+              <span class="field-help">授業や次の予定に間に合う病院を優先します</span>
+            </label>
+
+            <label class="search-field">
+              <span class="field-label">移動手段</span>
+              <select id="transportation">
+                <option value="walk">徒歩</option>
+                <option value="bike">自転車</option>
+                <option value="car">車</option>
+              </select>
+            </label>
+
+            <button class="primary-button search-submit" type="submit">病院を検索する</button>
+          </form>
+        </section>
+
+        <section class="screen" id="screen-results" aria-labelledby="results-title">
+          <div class="results-heading">
+            <div>
+              <h2 id="results-title">検索結果</h2>
+              <p class="muted" id="searchSummary"></p>
+              <p class="route-status" id="routeStatus" role="status"></p>
+            </div>
+            <button class="ghost-button results-back" type="button" data-nav="search">条件を変更</button>
+          </div>
+
+          <div class="view-switch">
+            <button class="seg active" type="button" data-view="list">おすすめ順</button>
+            <button class="seg" type="button" data-view="map">地図で見る</button>
+          </div>
+
+          <div class="result-layout">
+            <div id="results" class="results-list"></div>
+            <div id="mapView" class="map-view" hidden>
+              <div class="map-surface" id="mapSurface"></div>
+            </div>
+          </div>
+          <p class="route-attribution">
+            経路データ: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>
+            / <a href="https://project-osrm.org/" target="_blank" rel="noreferrer">OSRM</a>
+          </p>
+        </section>
+
+        <section class="screen" id="screen-detail" aria-labelledby="detail-title">
+          <button class="ghost-button" type="button" data-nav="results">検索結果に戻る</button>
+          <div id="detail"></div>
+        </section>
+
+        <section class="screen" id="screen-active" aria-labelledby="active-title">
+          <div class="screen-heading">
+            <div>
+              <h2 id="active-title">受診中</h2>
+              <p>Web版MVPでは手動で到着と終了を記録します。</p>
+            </div>
+          </div>
+          <div id="activeVisit"></div>
+        </section>
+
+        <section class="screen" id="screen-log" aria-labelledby="log-title">
+          <div class="screen-heading">
+            <div>
+              <h2 id="log-title">記録</h2>
+            </div>
+          </div>
+
+          <div class="record-view">
+            <section class="monthly-panel" aria-labelledby="calendarTitle">
+              <div class="calendar-head">
+                <button class="icon-button" type="button" id="prevMonth" aria-label="前の月">‹</button>
+                <h3 id="calendarTitle"></h3>
+                <button class="icon-button" type="button" id="nextMonth" aria-label="次の月">›</button>
+              </div>
+              <div id="monthlySummary" class="summary-strip"></div>
+              <div class="calendar" id="calendar"></div>
+            </section>
+
+            <section class="selected-day-panel">
+              <div class="section-title-row">
+                <div>
+                  <span class="section-kicker">選択した日</span>
+                  <h3 id="selectedDateTitle">受診記録</h3>
+                </div>
+              </div>
+              <div id="dayDetails" class="day-details"></div>
+            </section>
+          </div>
+
+        </section>
+      </main>
+
+      <nav class="tabbar" aria-label="主要ナビゲーション">
+        <button class="tab active" type="button" data-nav="search">探す</button>
+        <button class="tab" type="button" data-nav="active">受診中</button>
+        <button class="tab" type="button" data-nav="log">記録</button>
+      </nav>
+    </div>
+
+    <script src="data/facilities.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
