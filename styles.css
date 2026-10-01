@@ -331,6 +331,11 @@ input {
   gap: 12px;
 }
 
+.results-list[hidden],
+.map-view[hidden] {
+  display: none;
+}
+
 .hospital-card,
 .detail-panel,
 .active-panel,
@@ -408,6 +413,13 @@ input {
 .result-highlight > strong small {
   margin: 0 3px;
   font-size: 15px;
+}
+
+.duration-summary {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .return-message {
@@ -601,38 +613,53 @@ input {
 }
 
 .map-view {
-  min-height: 480px;
+  min-height: 420px;
 }
 
 .map-surface {
   position: relative;
-  min-height: 480px;
+  height: min(62vh, 560px);
+  min-height: 420px;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
-  background:
-    linear-gradient(90deg, rgba(23, 105, 224, 0.08) 1px, transparent 1px),
-    linear-gradient(rgba(23, 105, 224, 0.08) 1px, transparent 1px),
-    #f0f5f9;
-  background-size: 46px 46px;
+  background: #e8edf2;
   box-shadow: var(--shadow);
 }
 
-.map-pin {
-  position: absolute;
-  width: 168px;
-  padding: 9px 10px;
-  transform: translate(-50%, -50%);
-  border: 1px solid #b6c4d5;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 10px 24px rgba(23, 33, 47, 0.14);
+.map-popup {
+  display: grid;
+  min-width: 170px;
+  gap: 7px;
+}
+
+.map-popup strong {
+  color: #173762;
+  font-size: 14px;
+}
+
+.map-popup span {
+  color: var(--muted);
   font-size: 12px;
 }
 
-.map-pin strong {
-  display: block;
-  margin-bottom: 4px;
+.map-popup-button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.map-error {
+  display: grid;
+  height: 100%;
+  padding: 24px;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
 }
 
 .detail-panel,
@@ -727,6 +754,34 @@ input {
   border-radius: 8px;
 }
 
+.manual-time-panel {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.manual-time-panel summary {
+  color: #173762;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.manual-time-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border-left: 3px solid var(--teal);
+  background: #f8fafc;
+}
+
+.form-error {
+  min-height: 18px;
+  margin: 0;
+  color: #b42318;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .completion-form {
   display: grid;
   grid-template-columns: 1fr;
@@ -738,13 +793,54 @@ input {
   gap: 16px;
 }
 
-.monthly-panel,
-.selected-day-panel {
+.monthly-panel {
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   box-shadow: 0 6px 20px rgba(30, 42, 62, 0.07);
+}
+
+.month-picker {
+  width: auto;
+  min-width: 154px;
+  min-height: 40px;
+  padding: 8px 10px;
+  color: #173762;
+  font-size: 16px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.record-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f6f9;
+}
+
+.record-mode-button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.record-mode-button.active {
+  background: #fff;
+  color: var(--blue);
+  box-shadow: 0 1px 4px rgba(30, 42, 62, 0.12);
+}
+
+.record-mode-content[hidden] {
+  display: none;
 }
 
 .summary-strip {
@@ -823,6 +919,12 @@ input {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
+}
+
+.day-record-heading {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 
 .day-name,
@@ -907,6 +1009,14 @@ input {
 .personal-record h4 {
   margin: 0;
   font-size: 17px;
+}
+
+.record-date {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .stay-time {

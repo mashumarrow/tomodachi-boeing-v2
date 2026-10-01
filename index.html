@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campus Clinic Finder</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -11,13 +17,17 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">Campus Clinic Finder</p>
-          <h1>空きコマで行ける病院を探す</h1>
+          <h1>空きコマ診療</h1>
         </div>
         <div class="status-pill" id="visitStatus">受診予定なし</div>
       </header>
 
       <main>
-        <section class="screen active" id="screen-search" aria-labelledby="search-title">
+        <section
+          class="screen active"
+          id="screen-search"
+          aria-labelledby="search-title"
+        >
           <div class="screen-heading">
             <div>
               <h2 id="search-title">病院を探す</h2>
@@ -33,7 +43,9 @@
                 <option value="imadegawa">同志社大学 今出川キャンパス</option>
                 <option value="current">現在地を使う</option>
               </select>
-              <span class="field-help" id="locationStatus">検索時にOSRMで道路経路を計算します</span>
+              <span class="field-help" id="locationStatus"
+                >検索時にOSRMで道路経路を計算します</span
+              >
             </label>
 
             <label class="search-field">
@@ -58,17 +70,34 @@
             <fieldset class="search-field">
               <legend class="field-label">いつ出発しますか？</legend>
               <input id="when" type="hidden" value="now" />
-              <div class="choice-grid choice-grid-two" aria-label="出発タイミング">
-                <button class="choice-button active" type="button" data-when="now" aria-pressed="true">
+              <div
+                class="choice-grid choice-grid-two"
+                aria-label="出発タイミング"
+              >
+                <button
+                  class="choice-button active"
+                  type="button"
+                  data-when="now"
+                  aria-pressed="true"
+                >
                   今すぐ
                 </button>
-                <button class="choice-button" type="button" data-when="time" aria-pressed="false">
+                <button
+                  class="choice-button"
+                  type="button"
+                  data-when="time"
+                  aria-pressed="false"
+                >
                   時間を指定
                 </button>
               </div>
             </fieldset>
 
-            <label class="search-field scheduled-time" id="scheduledTimeField" hidden>
+            <label
+              class="search-field scheduled-time"
+              id="scheduledTimeField"
+              hidden
+            >
               <span class="field-label">出発時刻</span>
               <input id="startTime" type="time" value="13:30" />
             </label>
@@ -76,7 +105,9 @@
             <label class="search-field">
               <span class="field-label">何時までに戻りますか？</span>
               <input id="returnTime" type="time" value="14:50" />
-              <span class="field-help">授業や次の予定に間に合う病院を優先します</span>
+              <span class="field-help"
+                >授業や次の予定に間に合う病院を優先します</span
+              >
             </label>
 
             <label class="search-field">
@@ -88,23 +119,39 @@
               </select>
             </label>
 
-            <button class="primary-button search-submit" type="submit">病院を検索する</button>
+            <button class="primary-button search-submit" type="submit">
+              病院を検索する
+            </button>
           </form>
         </section>
 
-        <section class="screen" id="screen-results" aria-labelledby="results-title">
+        <section
+          class="screen"
+          id="screen-results"
+          aria-labelledby="results-title"
+        >
           <div class="results-heading">
             <div>
               <h2 id="results-title">検索結果</h2>
               <p class="muted" id="searchSummary"></p>
               <p class="route-status" id="routeStatus" role="status"></p>
             </div>
-            <button class="ghost-button results-back" type="button" data-nav="search">条件を変更</button>
+            <button
+              class="ghost-button results-back"
+              type="button"
+              data-nav="search"
+            >
+              条件を変更
+            </button>
           </div>
 
           <div class="view-switch">
-            <button class="seg active" type="button" data-view="list">おすすめ順</button>
-            <button class="seg" type="button" data-view="map">地図で見る</button>
+            <button class="seg active" type="button" data-view="list">
+              おすすめ順
+            </button>
+            <button class="seg" type="button" data-view="map">
+              地図で見る
+            </button>
           </div>
 
           <div class="result-layout">
@@ -114,17 +161,36 @@
             </div>
           </div>
           <p class="route-attribution">
-            経路データ: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>
-            / <a href="https://project-osrm.org/" target="_blank" rel="noreferrer">OSRM</a>
+            経路データ:
+            <a
+              href="https://www.openstreetmap.org/copyright"
+              target="_blank"
+              rel="noreferrer"
+              >© OpenStreetMap contributors</a
+            >
+            /
+            <a href="https://project-osrm.org/" target="_blank" rel="noreferrer"
+              >OSRM</a
+            >
           </p>
         </section>
 
-        <section class="screen" id="screen-detail" aria-labelledby="detail-title">
-          <button class="ghost-button" type="button" data-nav="results">検索結果に戻る</button>
+        <section
+          class="screen"
+          id="screen-detail"
+          aria-labelledby="detail-title"
+        >
+          <button class="ghost-button" type="button" data-nav="results">
+            検索結果に戻る
+          </button>
           <div id="detail"></div>
         </section>
 
-        <section class="screen" id="screen-active" aria-labelledby="active-title">
+        <section
+          class="screen"
+          id="screen-active"
+          aria-labelledby="active-title"
+        >
           <div class="screen-heading">
             <div>
               <h2 id="active-title">受診中</h2>
@@ -142,27 +208,81 @@
           </div>
 
           <div class="record-view">
-            <section class="monthly-panel" aria-labelledby="calendarTitle">
+            <section class="monthly-panel" aria-label="受診記録">
               <div class="calendar-head">
-                <button class="icon-button" type="button" id="prevMonth" aria-label="前の月">‹</button>
-                <h3 id="calendarTitle"></h3>
-                <button class="icon-button" type="button" id="nextMonth" aria-label="次の月">›</button>
+                <button
+                  class="icon-button"
+                  type="button"
+                  id="prevMonth"
+                  aria-label="前の月"
+                >
+                  ‹
+                </button>
+                <input
+                  class="month-picker"
+                  id="recordMonth"
+                  type="month"
+                  aria-label="表示する月"
+                />
+                <button
+                  class="icon-button"
+                  type="button"
+                  id="nextMonth"
+                  aria-label="次の月"
+                >
+                  ›
+                </button>
               </div>
-              <div id="monthlySummary" class="summary-strip"></div>
-              <div class="calendar" id="calendar"></div>
-            </section>
 
-            <section class="selected-day-panel">
-              <div class="section-title-row">
-                <div>
-                  <span class="section-kicker">選択した日</span>
-                  <h3 id="selectedDateTitle">受診記録</h3>
-                </div>
+              <div
+                class="record-mode-switch"
+                role="tablist"
+                aria-label="記録の表示方法"
+              >
+                <button
+                  class="record-mode-button active"
+                  type="button"
+                  role="tab"
+                  data-record-view="month"
+                  aria-selected="true"
+                >
+                  月の一覧
+                </button>
+                <button
+                  class="record-mode-button"
+                  type="button"
+                  role="tab"
+                  data-record-view="day"
+                  aria-selected="false"
+                >
+                  日付から探す
+                </button>
               </div>
-              <div id="dayDetails" class="day-details"></div>
+
+              <div id="monthlySummary" class="summary-strip"></div>
+
+              <div class="record-mode-content" id="monthRecordView">
+                <div class="section-title-row">
+                  <div>
+                    <span class="section-kicker">この月の受診</span>
+                    <h3 id="monthRecordsTitle">受診した病院</h3>
+                  </div>
+                </div>
+                <div id="monthDetails" class="day-details"></div>
+              </div>
+
+              <div class="record-mode-content" id="dayRecordView" hidden>
+                <div class="calendar" id="calendar"></div>
+                <div class="section-title-row day-record-heading">
+                  <div>
+                    <span class="section-kicker">選択した日</span>
+                    <h3 id="selectedDateTitle">受診記録</h3>
+                  </div>
+                </div>
+                <div id="dayDetails" class="day-details"></div>
+              </div>
             </section>
           </div>
-
         </section>
       </main>
 
@@ -174,6 +294,11 @@
     </div>
 
     <script src="data/facilities.js"></script>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9coqIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
     <script src="app.js"></script>
   </body>
 </html>

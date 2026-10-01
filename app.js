@@ -230,15 +230,18 @@ const communityPosts = [
 
 const state = {
   view: "list",
+  recordView: "month",
   selectedHospital: null,
   activeVisit: null,
   calendarDate: new Date(),
-  selectedDate: new Date().toISOString().slice(0, 10),
+  selectedDate: dateKey(new Date()),
   visits: loadVisits(),
   helpfulReviews: new Set(),
   currentLocation: null,
   routeTimes: new Map(),
   routeCache: new Map(),
+  resultMap: null,
+  resultMapBounds: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -252,8 +255,20 @@ function timeFromDate(date) {
   return date.toTimeString().slice(0, 5);
 }
 
+function formatClockMinutes(totalMinutes) {
+  const dayOffset = Math.floor(totalMinutes / (24 * 60));
+  const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  const clock = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  return dayOffset > 0 ? `翌日 ${clock}` : clock;
+}
+
 function dateKey(date) {
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatCurrency(value) {
@@ -454,9 +469,10 @@ function evaluateHospital(hospital) {
   const context = getSearchContext();
   const travel = getTravelDurations(hospital);
   const total = travel.outbound + travel.inbound + hospital.medianWait;
+  const returnAt = context.start + total;
   const remaining = context.returnBy - context.start - total;
   const fit = remaining >= 30 ? "good" : remaining >= 10 ? "warn" : remaining >= 0 ? "tight" : "bad";
-  return { ...travel, total, remaining, fit };
+  return { ...travel, total, returnAt, remaining, fit };
 }
 
 function fitLabel(fit) {
@@ -491,6 +507,79 @@ function matchingHospitals() {
     .slice(0, 15);
 }
 
+function createMapPopup(hospital, estimate) {
+  const popup = document.createElement("div");
+  popup.className = "map-popup";
+
+  const name = document.createElement("strong");
+  name.textContent = hospital.name;
+  popup.appendChild(name);
+
+  const returnTime = document.createElement("span");
+  returnTime.textContent = `${formatClockMinutes(estimate.returnAt)}ごろに戻れます`;
+  popup.appendChild(returnTime);
+
+  const detailButton = document.createElement("button");
+  detailButton.className = "map-popup-button";
+  detailButton.type = "button";
+  detailButton.textContent = "詳しく見る";
+  detailButton.addEventListener("click", () => renderDetail(hospital.id));
+  popup.appendChild(detailButton);
+  return popup;
+}
+
+function renderResultMap(results) {
+  const mapSurface = $("#mapSurface");
+  if (state.resultMap) {
+    state.resultMap.remove();
+    state.resultMap = null;
+  }
+
+  if (!window.L) {
+    mapSurface.innerHTML = '<div class="map-error">地図を読み込めませんでした。インターネット接続を確認してください。</div>';
+    return;
+  }
+
+  mapSurface.innerHTML = "";
+  const origin = getSelectedOrigin();
+  const map = L.map(mapSurface, { zoomControl: true });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+
+  const points = [[origin.latitude, origin.longitude]];
+  L.circleMarker([origin.latitude, origin.longitude], {
+    radius: 8,
+    color: "#ffffff",
+    weight: 3,
+    fillColor: "#1769e0",
+    fillOpacity: 1,
+  }).addTo(map).bindTooltip(origin.label, { direction: "top" });
+
+  results.forEach(({ hospital, estimate }) => {
+    const point = [hospital.latitude, hospital.longitude];
+    points.push(point);
+    L.marker(point)
+      .addTo(map)
+      .bindPopup(createMapPopup(hospital, estimate));
+  });
+
+  state.resultMap = map;
+  state.resultMapBounds = L.latLngBounds(points);
+  map.fitBounds(state.resultMapBounds, { padding: [28, 28], maxZoom: 15 });
+}
+
+function refreshResultMapSize() {
+  if (!state.resultMap) return;
+  window.setTimeout(() => {
+    state.resultMap.invalidateSize();
+    if (state.resultMapBounds) {
+      state.resultMap.fitBounds(state.resultMapBounds, { padding: [28, 28], maxZoom: 15 });
+    }
+  }, 0);
+}
+
 async function renderResults() {
   state.routeTimes.clear();
   const context = getSearchContext();
@@ -505,6 +594,11 @@ async function renderResults() {
   let results = matchingHospitals();
   $("#results-title").textContent = `検索結果 ${results.length}件`;
   if (!results.length) {
+    if (state.resultMap) {
+      state.resultMap.remove();
+      state.resultMap = null;
+      state.resultMapBounds = null;
+    }
     $("#routeStatus").className = "route-status warning";
     $("#routeStatus").textContent = loadedFromApi
       ? "現在地から12km以内に条件に合う施設がありません"
@@ -551,8 +645,9 @@ async function renderResults() {
       </header>
 
       <div class="result-highlight">
-        <span>往復・受診の合計目安</span>
-        <strong><small>約</small>${estimate.total}<small>分</small></strong>
+        <span>戻ってこられる時刻の目安</span>
+        <strong>${formatClockMinutes(estimate.returnAt)}<small>ごろ</small></strong>
+        <p class="duration-summary">往復・受診の合計 約${estimate.total}分</p>
         <p class="return-message ${fitClass(estimate.fit)}">${returnMessage(estimate)}</p>
       </div>
 
@@ -590,17 +685,7 @@ async function renderResults() {
     </article>
   `).join("");
 
-  const mapOrigin = getSelectedOrigin();
-  $("#mapSurface").innerHTML = results.map(({ hospital, estimate }) => {
-    const x = Math.max(8, Math.min(92, 50 + (hospital.longitude - mapOrigin.longitude) * 420));
-    const y = Math.max(8, Math.min(92, 50 - (hospital.latitude - mapOrigin.latitude) * 520));
-    return `
-    <button class="map-pin" type="button" data-detail="${hospital.id}" style="left:${x}%; top:${y}%">
-      <strong>${hospital.name}</strong>
-      ${estimate.total}分 / ${fitLabel(estimate.fit)}
-    </button>
-  `;
-  }).join("");
+  renderResultMap(results);
 }
 
 function renderDetail(hospitalId) {
@@ -646,7 +731,6 @@ function renderDetail(hospitalId) {
         <aside>
           <h3>滞在時間データ</h3>
           ${statsContent}
-          <p class="muted">電話: ${hospital.phone}</p>
           <p class="muted">${hospital.type === "pharmacy" ? "区分" : "診療科"}: ${departmentNames}</p>
           <p class="muted">出発地点から直線距離: ${getFacilityDistance(hospital).toFixed(2)}km</p>
         </aside>
@@ -718,14 +802,22 @@ function renderActiveVisit() {
         <h3>${visit.hospitalName}</h3>
         <p class="muted">${departments[visit.department]} / status = ${visit.status}</p>
       </div>
-      <ul class="timeline">
-        <li><span>受診予定作成</span><strong>${formatTime(visit.plannedAt)}</strong></li>
-        <li><span>病院に到着</span><strong>${visit.arrivalAt ? formatTime(visit.arrivalAt) : "未記録"}</strong></li>
-        <li><span>受診終了</span><strong>${visit.leaveAt ? formatTime(visit.leaveAt) : "未記録"}</strong></li>
-      </ul>
+      <details class="manual-time-panel" open>
+        <summary>到着・終了時刻を手入力</summary>
+        <form class="manual-time-form" id="manualTimeForm">
+          <label>病院への到着日時
+            <input id="manualArrivalAt" type="datetime-local" value="${toDatetimeLocal(visit.arrivalAt)}" required />
+          </label>
+          <label>受診終了日時（任意）
+            <input id="manualLeaveAt" type="datetime-local" value="${toDatetimeLocal(visit.leaveAt)}" />
+          </label>
+          <p class="form-error" id="manualTimeError" aria-live="polite"></p>
+          <button class="secondary-button" type="submit">入力した時刻を反映</button>
+        </form>
+      </details>
       <div class="card-actions">
-        <button class="primary-button" type="button" id="arrivalButton" ${visit.arrivalAt ? "disabled" : ""}>病院に到着</button>
-        <button class="secondary-button" type="button" id="leaveButton" ${!visit.arrivalAt || visit.leaveAt ? "disabled" : ""}>受診終了</button>
+        <button class="primary-button" type="button" id="arrivalButton" ${visit.arrivalAt ? "disabled" : ""}>現在時刻で到着</button>
+        <button class="secondary-button" type="button" id="leaveButton" ${!visit.arrivalAt || visit.leaveAt ? "disabled" : ""}>現在時刻で終了</button>
       </div>
       ${visit.leaveAt ? completionFields(visit) : ""}
     </div>
@@ -758,6 +850,7 @@ function completionFields(visit) {
 
 function markArrival() {
   state.activeVisit.arrivalAt = new Date().toISOString();
+  state.activeVisit.arrivalMethod = "button";
   state.activeVisit.status = "measuring";
   saveActiveVisit();
   renderActiveVisit();
@@ -766,7 +859,38 @@ function markArrival() {
 
 function markLeave() {
   state.activeVisit.leaveAt = new Date().toISOString();
+  state.activeVisit.leaveMethod = "button";
   state.activeVisit.status = "completed";
+  saveActiveVisit();
+  renderActiveVisit();
+  updateStatus();
+}
+
+function applyManualTimes(event) {
+  event.preventDefault();
+  if (!state.activeVisit) return;
+
+  const arrivalValue = $("#manualArrivalAt").value;
+  const leaveValue = $("#manualLeaveAt").value;
+  const error = $("#manualTimeError");
+  const arrivalAt = new Date(arrivalValue);
+  const leaveAt = leaveValue ? new Date(leaveValue) : null;
+
+  if (!arrivalValue || Number.isNaN(arrivalAt.getTime())) {
+    error.textContent = "到着日時を入力してください。";
+    return;
+  }
+
+  if (leaveAt && (Number.isNaN(leaveAt.getTime()) || leaveAt < arrivalAt)) {
+    error.textContent = "終了日時は到着日時より後にしてください。";
+    return;
+  }
+
+  state.activeVisit.arrivalAt = arrivalAt.toISOString();
+  state.activeVisit.leaveAt = leaveAt ? leaveAt.toISOString() : null;
+  state.activeVisit.arrivalMethod = "manual";
+  state.activeVisit.leaveMethod = leaveAt ? "manual" : null;
+  state.activeVisit.status = leaveAt ? "completed" : "measuring";
   saveActiveVisit();
   renderActiveVisit();
   updateStatus();
@@ -799,6 +923,13 @@ function formatTime(value) {
   return new Date(value).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
 }
 
+function toDatetimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function formatDate(value) {
   return new Date(value).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
 }
@@ -827,7 +958,17 @@ function renderCalendar() {
     return acc;
   }, {});
 
-  $("#calendarTitle").textContent = `${year}年${month + 1}月`;
+  const selectedParts = state.selectedDate.split("-").map(Number);
+  if (selectedParts[0] !== year || selectedParts[1] !== month + 1) {
+    const latestVisit = [...monthVisits].sort((a, b) => (
+      new Date(b.arrivalAt || b.plannedAt) - new Date(a.arrivalAt || a.plannedAt)
+    ))[0];
+    state.selectedDate = latestVisit
+      ? dateKey(new Date(latestVisit.arrivalAt || latestVisit.plannedAt))
+      : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+  }
+
+  $("#recordMonth").value = `${year}-${String(month + 1).padStart(2, "0")}`;
   const names = ["月", "火", "水", "木", "金", "土", "日"];
   const blanks = (first.getDay() + 6) % 7;
   const cells = names.map((name) => `<div class="day-name">${name}</div>`);
@@ -849,7 +990,9 @@ function renderCalendar() {
 
   $("#calendar").innerHTML = cells.join("");
   renderMonthlySummary(monthVisits);
+  renderMonthDetails(monthVisits, year, month);
   renderDayDetails(visitsByDate[state.selectedDate] || []);
+  renderRecordView();
 }
 
 function renderMonthlySummary(monthVisits) {
@@ -860,6 +1003,58 @@ function renderMonthlySummary(monthVisits) {
     <div class="summary-item"><span>滞在時間</span><strong>${totalMinutes}<small>分</small></strong></div>
     <div class="summary-item"><span>平均</span><strong>${avg}<small>分</small></strong></div>
   `;
+}
+
+function renderRecordView() {
+  const isMonthView = state.recordView === "month";
+  $("#monthRecordView").hidden = !isMonthView;
+  $("#dayRecordView").hidden = isMonthView;
+  document.querySelectorAll("[data-record-view]").forEach((button) => {
+    const isActive = button.dataset.recordView === state.recordView;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+}
+
+function visitRecordMarkup(visit, showDate = false) {
+  const visitDate = new Date(visit.arrivalAt || visit.plannedAt);
+  const duration = visit.stayMinutes || stayMinutes(visit);
+  return `
+    <article class="personal-record">
+      <header>
+        <div>
+          ${showDate ? `<time class="record-date" datetime="${dateKey(visitDate)}">${formatDate(visitDate)}</time>` : ""}
+          <span class="department-label">${departments[visit.department] || "診療科未設定"}</span>
+          <h4>${visit.hospitalName}</h4>
+        </div>
+        <strong class="stay-time">${duration}<small>分</small></strong>
+      </header>
+      <dl>
+        <div><dt>受診時間</dt><dd>${formatTime(visit.arrivalAt)}〜${formatTime(visit.leaveAt)}</dd></div>
+        <div><dt>費用</dt><dd>${visit.feeAmount ? formatCurrency(Number(visit.feeAmount)) : "未入力"}</dd></div>
+        <div><dt>予約</dt><dd>${visit.reservationStatus}</dd></div>
+        <div><dt>待ち時間</dt><dd>${visit.waitingImpression}</dd></div>
+      </dl>
+    </article>
+  `;
+}
+
+function renderMonthDetails(visits, year, month) {
+  $("#monthRecordsTitle").textContent = `${year}年${month + 1}月に受診した病院`;
+  if (!visits.length) {
+    $("#monthDetails").innerHTML = `
+      <div class="empty-record">
+        <strong>この月の記録はありません</strong>
+        <span>ほかの月を選ぶと、その月に受診した病院を確認できます。</span>
+      </div>
+    `;
+    return;
+  }
+
+  $("#monthDetails").innerHTML = [...visits]
+    .sort((a, b) => new Date(b.arrivalAt || b.plannedAt) - new Date(a.arrivalAt || a.plannedAt))
+    .map((visit) => visitRecordMarkup(visit, true))
+    .join("");
 }
 
 function renderDayDetails(visits) {
@@ -874,23 +1069,7 @@ function renderDayDetails(visits) {
     `;
     return;
   }
-  $("#dayDetails").innerHTML = visits.map((visit) => `
-    <article class="personal-record">
-      <header>
-        <div>
-          <span class="department-label">${departments[visit.department]}</span>
-          <h4>${visit.hospitalName}</h4>
-        </div>
-        <strong class="stay-time">${visit.stayMinutes}<small>分</small></strong>
-      </header>
-      <dl>
-        <div><dt>受診時間</dt><dd>${formatTime(visit.arrivalAt)}〜${formatTime(visit.leaveAt)}</dd></div>
-        <div><dt>費用</dt><dd>${visit.feeAmount ? formatCurrency(Number(visit.feeAmount)) : "未入力"}</dd></div>
-        <div><dt>予約</dt><dd>${visit.reservationStatus}</dd></div>
-        <div><dt>待ち時間</dt><dd>${visit.waitingImpression}</dd></div>
-      </dl>
-    </article>
-  `).join("");
+  $("#dayDetails").innerHTML = visits.map((visit) => visitRecordMarkup(visit)).join("");
 }
 
 function renderReviewCards(hospital) {
@@ -1001,10 +1180,15 @@ function bindEvents() {
     const navButton = event.target.closest("[data-nav]");
     const dateButton = event.target.closest("[data-date]");
     const helpfulButton = event.target.closest("[data-helpful]");
+    const recordViewButton = event.target.closest("[data-record-view]");
 
     if (detailButton) renderDetail(detailButton.dataset.detail);
     if (planButton) planVisit(planButton.dataset.plan);
     if (navButton) navigate(navButton.dataset.nav);
+    if (recordViewButton) {
+      state.recordView = recordViewButton.dataset.recordView;
+      renderRecordView();
+    }
     if (helpfulButton) {
       const reviewId = helpfulButton.dataset.helpful;
       if (state.helpfulReviews.has(reviewId)) state.helpfulReviews.delete(reviewId);
@@ -1021,6 +1205,7 @@ function bindEvents() {
 
   document.body.addEventListener("submit", (event) => {
     if (event.target.id === "completionForm") completeVisit(event);
+    if (event.target.id === "manualTimeForm") applyManualTimes(event);
   });
 
   document.body.addEventListener("click", (event) => {
@@ -1034,6 +1219,7 @@ function bindEvents() {
       document.querySelectorAll(".seg").forEach((item) => item.classList.toggle("active", item === button));
       $("#results").hidden = state.view !== "list";
       $("#mapView").hidden = state.view !== "map";
+      if (state.view === "map") refreshResultMapSize();
     });
   });
 
@@ -1044,6 +1230,13 @@ function bindEvents() {
 
   $("#nextMonth").addEventListener("click", () => {
     state.calendarDate = new Date(state.calendarDate.getFullYear(), state.calendarDate.getMonth() + 1, 1);
+    renderCalendar();
+  });
+
+  $("#recordMonth").addEventListener("change", (event) => {
+    const [year, month] = event.target.value.split("-").map(Number);
+    if (!year || !month) return;
+    state.calendarDate = new Date(year, month - 1, 1);
     renderCalendar();
   });
 
