@@ -1,0 +1,10 @@
+.git
+.gitignore
+.agents
+.codex
+.aws
+db
+__pycache__
+*.py[cod]
+data/*.sqlite3-shm
+data/*.sqlite3-wal

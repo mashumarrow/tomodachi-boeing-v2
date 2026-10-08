@@ -128,12 +128,51 @@ git push origin main
 
 ```text
 db/*.csv
-data/*.sqlite3
 data/*.sqlite3-shm
 data/*.sqlite3-wal
 __pycache__/
 *.pyc
 ```
+
+`data/facilities.sqlite3` はNorthflankへのデプロイに必要なため、例外としてGit管理へ含めます。
+
+## Northflankへデプロイ
+
+このリポジトリは、ルートの `Dockerfile` を使ってNorthflankへデプロイできます。全国施設DBはコンテナへ同梱するため、`data/facilities.sqlite3` もGitへ追加します。元CSVは追加しません。
+
+### 1. デプロイ用ファイルをGitHubへ反映
+
+```powershell
+git add .gitignore .dockerignore Dockerfile server.py README.md data/facilities.sqlite3
+git commit -m "Add Northflank deployment configuration"
+git push origin main
+```
+
+SQLiteは約58MBあるためGitHubから警告されますが、100MBの上限内です。`db` フォルダのCSVは追加しないでください。
+
+### 2. Northflankでサービスを作成
+
+1. Northflankでプロジェクトを作成する
+2. 新しいCombined Serviceを作成する
+3. GitHubの `tomodachi-boeing-v2` リポジトリを接続する
+4. ブランチに `main` を選択する
+5. Build typeに `Dockerfile` を選択する
+6. Dockerfile pathを `/Dockerfile`、build contextを `/` にする
+7. Developer Sandboxの無料プランを選択する
+
+### 3. 公開ポートを設定
+
+Networkingで次のポートを追加します。
+
+```text
+Port: 8000
+Protocol: HTTP
+Public: ON
+```
+
+ポートにNorthflankの公開サブドメインを割り当て、デプロイが完了したら発行されたHTTPS URLを開きます。追加の環境変数は不要です。
+
+> NorthflankのDeveloper Sandboxは無料枠ですが、アカウント確認のため支払い方法の登録が必要です。
 
 ## トラブルシューティング
 

@@ -1,6 +1,7 @@
 import json
 import math
 import mimetypes
+import os
 import sqlite3
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -9,8 +10,8 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 DATABASE = ROOT / "data" / "facilities.sqlite3"
-HOST = "127.0.0.1"
-PORT = 8000
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8000"))
 
 
 def haversine(latitude, longitude, target_latitude, target_longitude):
