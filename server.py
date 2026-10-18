@@ -3,9 +3,17 @@ import math
 import mimetypes
 import os
 import sqlite3
+from contextlib import closing
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.error import URLError
+
+import jwt
+from user_records import (auth_config, authenticated_subject, list_records, save_record,
+                          get_profile, save_profile, UNIVERSITY_DATA, MIYAZAKI_UNIVERSITY_ID,
+                          list_reviews, unpublish_review)
+from university_locations import resolve_university_location
 
 
 ROOT = Path(__file__).resolve().parent
@@ -31,12 +39,135 @@ class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def end_headers(self):
+        if urlparse(self.path).path in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css"}:
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/auth-config":
+            self.send_json(auth_config())
+            return
+        if parsed.path == "/api/visits":
+            subject = self.require_member()
+            if subject:
+                self.send_json({"visits": list_records(subject)})
+            return
+        if parsed.path == "/api/reviews":
+            subject = self.require_member()
+            if not subject:
+                return
+            if get_profile(subject)["universityId"] != MIYAZAKI_UNIVERSITY_ID:
+                self.send_json({"error": "口コミは宮崎大学の登録者が利用できます。", "code": "miyazaki_required"}, 403)
+                return
+            hospital_id = parse_qs(parsed.query).get("hospitalId", [""])[0]
+            if not hospital_id or len(hospital_id) > 300:
+                self.send_json({"error": "病院を指定してください。"}, 400)
+                return
+            self.send_json({"reviews": list_reviews(subject, hospital_id)})
+            return
         if parsed.path == "/api/facilities":
+            if not self.require_member():
+                return
             self.handle_facilities(parse_qs(parsed.query))
             return
+        if parsed.path == "/api/university-origin":
+            subject = self.require_member()
+            if not subject:
+                return
+            try:
+                location = resolve_university_location(get_profile(subject)["universityId"])
+                self.send_json({"origin": location})
+            except (ValueError, URLError, TimeoutError, KeyError, TypeError):
+                self.send_json({"error": "大学の所在地を取得できませんでした。「現在地を使う」で検索してください。"}, 503)
+            return
+        if parsed.path in {"/api/profile", "/api/universities"}:
+            subject = self.require_user()
+            if subject:
+                self.send_json({"profile": get_profile(subject)} if parsed.path == "/api/profile" else UNIVERSITY_DATA)
+            return
+        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/data/facilities.js"}:
+            self.send_json({"error": "Not found"}, 404)
+            return
         super().do_GET()
+
+    def do_HEAD(self):
+        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/data/facilities.js"}:
+            self.send_error(404)
+            return
+        super().do_HEAD()
+
+    def require_user(self):
+        try:
+            return authenticated_subject(self.headers.get("Authorization", ""))
+        except RuntimeError:
+            self.send_json({"error": "Auth0の設定が未完了です。"}, 503)
+        except jwt.PyJWKClientConnectionError:
+            self.send_json({"error": "Auth0の署名鍵を取得できません。サーバーのインターネット接続を確認してください。", "code": "auth_key_unavailable"}, 503)
+        except jwt.ExpiredSignatureError:
+            self.send_json({"error": "ログインの有効期限が切れました。再度ログインしてください。", "code": "token_expired"}, 401)
+        except jwt.ImmatureSignatureError:
+            self.log_error("Authentication rejected: token_not_yet_valid")
+            self.send_json({"error": "トークンの有効開始時刻とサーバー時刻が一致しません。PC・サーバーの日時を自動設定にしてください。", "code": "token_not_yet_valid"}, 401)
+        except jwt.InvalidAudienceError:
+            self.send_json({"error": "トークンのAudienceとAPI Identifierが一致しません。", "code": "invalid_audience"}, 401)
+        except jwt.InvalidIssuerError:
+            self.send_json({"error": "トークンの発行元とAuth0 Domainが一致しません。", "code": "invalid_issuer"}, 401)
+        except jwt.InvalidAlgorithmError:
+            self.send_json({"error": "Auth0 APIの署名方式をRS256に設定し、ログインし直してください。", "code": "invalid_algorithm"}, 401)
+        except jwt.InvalidSignatureError:
+            self.send_json({"error": "トークンの署名を検証できません。ログインし直してください。", "code": "invalid_signature"}, 401)
+        except jwt.DecodeError:
+            self.send_json({"error": "API用の署名付きトークンを読み取れません。Auth0 APIのIdentifier・RS256・トークン暗号化設定を確認してください。", "code": "invalid_token_format"}, 401)
+        except jwt.PyJWKClientError:
+            self.send_json({"error": "トークンに対応する公開鍵がありません。Auth0 APIの署名方式とDomainを確認してください。", "code": "signing_key_not_found"}, 401)
+        except jwt.InvalidTokenError as error:
+            self.log_error("Authentication rejected: %s", type(error).__name__)
+            self.send_json({"error": "ログイントークンが無効です。再度ログインしてください。", "code": "invalid_token"}, 401)
+        return None
+
+    def require_member(self):
+        subject = self.require_user()
+        if subject and not get_profile(subject):
+            self.send_json({"error": "プロフィールを登録してください。", "code": "profile_required"}, 403)
+            return None
+        return subject
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path not in {"/api/visits", "/api/profile"}:
+            self.send_json({"error": "Not found"}, 404)
+            return
+        subject = self.require_user() if path == "/api/profile" else self.require_member()
+        if not subject:
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 16384:
+                raise ValueError("記録のサイズが正しくありません。")
+            payload = json.loads(self.rfile.read(length))
+            record = save_profile(subject, payload) if path == "/api/profile" else save_record(subject, payload)
+        except (ValueError, UnicodeDecodeError) as error:
+            self.send_json({"error": str(error)}, 400)
+            return
+        self.send_json({"profile" if path == "/api/profile" else "visit": record}, 201)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/reviews":
+            self.send_json({"error": "Not found"}, 404)
+            return
+        subject = self.require_member()
+        if not subject:
+            return
+        visit_id = parse_qs(parsed.query).get("visitId", [""])[0]
+        try:
+            record = unpublish_review(subject, visit_id)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, 404)
+            return
+        self.send_json({"visit": record})
 
     def handle_facilities(self, query):
         try:
@@ -44,7 +175,6 @@ class AppHandler(SimpleHTTPRequestHandler):
             longitude = float(query["longitude"][0])
             radius = min(50.0, max(1.0, float(query.get("radius", ["12"])[0])))
             limit = min(200, max(1, int(query.get("limit", ["100"])[0])))
-            facility_type = query.get("type", ["medical"])[0]
             department = query.get("department", [""])[0]
         except (KeyError, ValueError, IndexError):
             self.send_json({"error": "検索条件が正しくありません"}, 400)
@@ -63,17 +193,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             longitude - longitude_delta,
             longitude + longitude_delta,
         ]
-        type_clause = "f.type = 'pharmacy'"
-        department_clause = ""
-        if facility_type != "pharmacy":
-            type_clause = "f.type IN ('hospital', 'clinic')"
-            department_clause = """
-                AND EXISTS (
-                    SELECT 1 FROM facility_departments fd
-                    WHERE fd.facility_id = f.id AND fd.department = ?
-                )
-            """
-            parameters.append(department)
+        parameters.append(department)
 
         sql = f"""
             SELECT
@@ -84,11 +204,14 @@ class AppHandler(SimpleHTTPRequestHandler):
             FROM facilities f
             WHERE f.latitude BETWEEN ? AND ?
               AND f.longitude BETWEEN ? AND ?
-              AND {type_clause}
-              {department_clause}
+              AND f.type IN ('hospital', 'clinic')
+              AND EXISTS (
+                  SELECT 1 FROM facility_departments fd
+                  WHERE fd.facility_id = f.id AND fd.department = ?
+              )
         """
 
-        with sqlite3.connect(DATABASE) as connection:
+        with closing(sqlite3.connect(DATABASE)) as connection:
             connection.row_factory = sqlite3.Row
             candidates = connection.execute(sql, parameters).fetchall()
 

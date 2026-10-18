@@ -1,5 +1,6 @@
 # Source datasets are too large for regular GitHub repositories.
 db/*.csv
+!db/20260825-mxt_chousa01-000011635_6.csv
 
 # Generated facility database and SQLite runtime files.
 data/*.sqlite3
@@ -10,3 +11,6 @@ data/*.sqlite3-wal
 # Python bytecode.
 __pycache__/
 *.py[cod]
+.env
+.venv/
+node_modules/

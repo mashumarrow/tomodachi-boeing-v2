@@ -1,0 +1,12 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./index.html";
+@source "./app.js";
+
+@plugin "daisyui" {
+  themes: light --default;
+  root: ".access-screen";
+  include: button, input, select;
+  prefix: "du-";
+  logs: false;
+}

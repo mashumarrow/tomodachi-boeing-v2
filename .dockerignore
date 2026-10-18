@@ -8,3 +8,7 @@ __pycache__
 *.py[cod]
 data/*.sqlite3-shm
 data/*.sqlite3-wal
+data/user-records.sqlite3
+.env
+.venv
+node_modules

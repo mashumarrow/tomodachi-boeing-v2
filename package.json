@@ -1,0 +1,12 @@
+{
+  "name": "campus-clinic-ui",
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i ui.css -o ui.generated.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.0",
+    "daisyui": "5.7.50",
+    "tailwindcss": "4.3.0"
+  }
+}

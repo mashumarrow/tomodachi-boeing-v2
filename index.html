@@ -10,10 +10,127 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="ui.generated.css" />
+    <link rel="stylesheet" href="styles.css?v=20261018-student-reviews" />
   </head>
   <body>
-    <div class="app-shell">
+    <p class="access-status" id="accountStatus" role="status">
+      ログインを確認中
+    </p>
+    <section
+      class="access-screen"
+      id="loginScreen"
+      aria-labelledby="loginTitle"
+      data-theme="light"
+      hidden
+    >
+      <div class="access-body">
+        <h1 id="loginTitle">空きコマ診療</h1>
+        <div class="access-actions">
+          <button
+            class="du-btn du-btn-primary"
+            id="loginButton"
+            type="button"
+            disabled
+          >
+            ログイン
+          </button>
+          <button
+            class="du-btn du-btn-outline"
+            id="signupButton"
+            type="button"
+            disabled
+          >
+            新規登録
+          </button>
+        </div>
+      </div>
+    </section>
+    <section
+      class="access-screen"
+      id="profileScreen"
+      aria-labelledby="profileTitle"
+      data-theme="light"
+      hidden
+    >
+      <div class="access-body profile-body">
+        <header class="access-brand">空きコマ診療</header>
+        <h1 id="profileTitle">プロフィール</h1>
+        <form id="profileForm" class="profile-form">
+          <div class="profile-settings-fields">
+            <div class="university-picker">
+              <label for="universitySearch"
+                >大学<span class="field-required">必須</span></label
+              >
+              <input
+                class="du-input"
+                id="universitySearch"
+                type="search"
+                placeholder="大学名・都道府県で検索"
+                autocomplete="off"
+                required
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded="false"
+                aria-controls="universitySuggestions"
+              />
+              <input id="universitySelect" type="hidden" />
+              <span
+                id="universitySuggestions"
+                class="university-suggestions"
+                role="listbox"
+                aria-label="大学の候補"
+                hidden
+              ></span>
+              <span
+                id="universitySelection"
+                class="university-selection"
+                role="status"
+              ></span>
+            </div>
+            <label
+              >学年
+              <select class="du-select" id="profileGrade" required>
+                <option value="">学年を選択</option>
+                <option value="1">学部1年</option>
+                <option value="2">学部2年</option>
+                <option value="3">学部3年</option>
+                <option value="4">学部4年</option>
+                <option value="5">学部5年</option>
+                <option value="6">学部6年</option>
+                <option value="master1">修士1年</option>
+                <option value="master2">修士2年</option>
+                <option value="doctor1">博士1年</option>
+                <option value="doctor2">博士2年</option>
+                <option value="doctor3">博士3年以上</option>
+                <option value="other">その他</option>
+              </select>
+            </label>
+            <label
+              >性別
+              <select class="du-select" id="profileGender" required>
+                <option value="">選択してください</option>
+                <option value="female">女性</option>
+                <option value="male">男性</option>
+                <option value="other">その他</option>
+                <option value="prefer_not_to_say">回答しない</option>
+              </select>
+            </label>
+          </div>
+          <button class="du-btn du-btn-primary" type="submit">
+            登録して始める
+          </button>
+        </form>
+        <button
+          class="du-btn du-btn-ghost profile-signout"
+          id="profileLogoutButton"
+          type="button"
+        >
+          別のアカウントでログイン
+        </button>
+      </div>
+    </section>
+    <div class="app-shell" id="appContent" hidden>
       <header class="topbar">
         <div>
           <p class="eyebrow">Campus Clinic Finder</p>
@@ -21,6 +138,13 @@
         </div>
         <div class="status-pill" id="visitStatus">受診予定なし</div>
       </header>
+
+      <div class="account-bar">
+        <span id="profileSummary"></span>
+        <button class="secondary-button" id="logoutButton" type="button" hidden>
+          ログアウト
+        </button>
+      </div>
 
       <main>
         <section
@@ -31,7 +155,6 @@
           <div class="screen-heading">
             <div>
               <h2 id="search-title">病院を探す</h2>
-              <p>空き時間に行ける病院を検索します。</p>
             </div>
           </div>
 
@@ -39,20 +162,8 @@
             <label class="search-field">
               <span class="field-label">出発地点</span>
               <select id="originType" aria-label="出発地点">
-                <option value="miyazaki">宮崎大学 木花キャンパス</option>
-                <option value="imadegawa">同志社大学 今出川キャンパス</option>
+                <option value="university">自分の大学</option>
                 <option value="current">現在地を使う</option>
-              </select>
-              <span class="field-help" id="locationStatus"
-                >検索時にOSRMで道路経路を計算します</span
-              >
-            </label>
-
-            <label class="search-field">
-              <span class="field-label">探す施設</span>
-              <select id="facilityType" aria-label="施設の種類">
-                <option value="medical">病院・診療所</option>
-                <option value="pharmacy">薬局</option>
               </select>
             </label>
 
@@ -105,9 +216,6 @@
             <label class="search-field">
               <span class="field-label">何時までに戻りますか？</span>
               <input id="returnTime" type="time" value="14:50" />
-              <span class="field-help"
-                >授業や次の予定に間に合う病院を優先します</span
-              >
             </label>
 
             <label class="search-field">
@@ -296,9 +404,10 @@
     <script src="data/facilities.js"></script>
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9coqIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
-    <script src="app.js"></script>
+    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.28/auth0-spa-js.production.js"></script>
+    <script src="app.js?v=20261018-student-reviews"></script>
   </body>
 </html>
