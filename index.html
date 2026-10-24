@@ -11,7 +11,7 @@
       crossorigin=""
     />
     <link rel="stylesheet" href="ui.generated.css" />
-    <link rel="stylesheet" href="styles.css?v=20261018-student-reviews" />
+    <link rel="stylesheet" href="styles.css?v=20261024-departure-input" />
   </head>
   <body>
     <p class="access-status" id="accountStatus" role="status">
@@ -56,8 +56,11 @@
       <div class="access-body profile-body">
         <header class="access-brand">空きコマ診療</header>
         <h1 id="profileTitle">プロフィール</h1>
-        <form id="profileForm" class="profile-form">
+        <form id="profileForm" class="profile-form" novalidate>
           <div class="profile-settings-fields">
+            <label for="profileNickname">ニックネーム（公開名）
+              <input class="du-input" id="profileNickname" type="text" maxlength="20" placeholder="例：ひなた" autocomplete="nickname" required />
+            </label>
             <div class="university-picker">
               <label for="universitySearch"
                 >大学<span class="field-required">必須</span></label
@@ -117,9 +120,12 @@
               </select>
             </label>
           </div>
-          <button class="du-btn du-btn-primary" type="submit">
-            登録して始める
-          </button>
+          <div class="profile-submit">
+            <p class="profile-feedback" id="profileStatus" role="alert"></p>
+            <button class="du-btn du-btn-primary" type="submit">
+              登録して始める
+            </button>
+          </div>
         </form>
         <button
           class="du-btn du-btn-ghost profile-signout"
@@ -132,19 +138,27 @@
     </section>
     <div class="app-shell" id="appContent" hidden>
       <header class="topbar">
-        <div>
+        <div class="topbar-brand">
           <p class="eyebrow">Campus Clinic Finder</p>
           <h1>空きコマ診療</h1>
         </div>
-        <div class="status-pill" id="visitStatus">受診予定なし</div>
+        <div class="account-control" id="accountControl">
+          <button class="account-toggle" id="accountButton" type="button" aria-label="アカウント" aria-expanded="false" aria-controls="accountMenu" title="アカウント">
+            <img class="account-avatar" id="accountAvatar" alt="" referrerpolicy="no-referrer" hidden />
+            <span class="account-initial" id="accountInitial" aria-hidden="true"></span>
+          </button>
+          <div class="account-menu" id="accountMenu" hidden>
+            <div class="account-identity">
+              <strong id="accountNickname"></strong>
+              <span id="profileSummary"></span>
+            </div>
+            <button class="account-logout" id="logoutButton" type="button">
+              <img src="assets/icons/log-out.svg" width="20" height="20" alt="" aria-hidden="true" />
+              ログアウト
+            </button>
+          </div>
+        </div>
       </header>
-
-      <div class="account-bar">
-        <span id="profileSummary"></span>
-        <button class="secondary-button" id="logoutButton" type="button" hidden>
-          ログアウト
-        </button>
-      </div>
 
       <main>
         <section
@@ -159,13 +173,10 @@
           </div>
 
           <form class="search-panel" id="searchForm">
-            <label class="search-field">
+            <div class="search-field">
               <span class="field-label">出発地点</span>
-              <select id="originType" aria-label="出発地点">
-                <option value="university">自分の大学</option>
-                <option value="current">現在地を使う</option>
-              </select>
-            </label>
+              <p class="search-origin" id="searchOrigin">自分の大学</p>
+            </div>
 
             <label class="search-field" id="departmentField">
               <span class="field-label">診療科</span>
@@ -178,39 +189,9 @@
               </select>
             </label>
 
-            <fieldset class="search-field">
-              <legend class="field-label">いつ出発しますか？</legend>
-              <input id="when" type="hidden" value="now" />
-              <div
-                class="choice-grid choice-grid-two"
-                aria-label="出発タイミング"
-              >
-                <button
-                  class="choice-button active"
-                  type="button"
-                  data-when="now"
-                  aria-pressed="true"
-                >
-                  今すぐ
-                </button>
-                <button
-                  class="choice-button"
-                  type="button"
-                  data-when="time"
-                  aria-pressed="false"
-                >
-                  時間を指定
-                </button>
-              </div>
-            </fieldset>
-
-            <label
-              class="search-field scheduled-time"
-              id="scheduledTimeField"
-              hidden
-            >
+            <label class="search-field">
               <span class="field-label">出発時刻</span>
-              <input id="startTime" type="time" value="13:30" />
+              <input id="startTime" type="time" required />
             </label>
 
             <label class="search-field">
@@ -401,13 +382,12 @@
       </nav>
     </div>
 
-    <script src="data/facilities.js"></script>
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
     <script src="https://cdn.auth0.com/js/auth0-spa-js/2.28/auth0-spa-js.production.js"></script>
-    <script src="app.js?v=20261018-student-reviews"></script>
+    <script src="app.js?v=20261024-departure-input"></script>
   </body>
 </html>

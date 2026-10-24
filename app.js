@@ -33,108 +33,7 @@ const osrmServers = {
 
 let lastOsrmRequestAt = 0;
 
-const demoHospitals = [
-  {
-    id: "aoba",
-    name: "青葉クリニック",
-    address: "大学正門から東へ徒歩8分",
-    departments: ["internal", "dermatology"],
-    open: "09:00-17:30",
-    baseTravel: 8,
-    medianWait: 35,
-    p60: 81,
-    p90: 94,
-    samples: 28,
-    feeLow: 1500,
-    feeHigh: 2500,
-    phone: "075-000-1200",
-    website: "https://example.com/aoba",
-    maps: "https://www.google.com/maps/search/?api=1&query=Aoba+Clinic",
-    x: 34,
-    y: 40,
-  },
-  {
-    id: "karasuma",
-    name: "烏丸駅前メディカル",
-    address: "地下鉄駅からすぐ",
-    departments: ["internal", "eye", "ent"],
-    open: "10:00-19:00",
-    baseTravel: 14,
-    medianWait: 22,
-    p60: 90,
-    p90: 98,
-    samples: 46,
-    feeLow: 1200,
-    feeHigh: 3200,
-    phone: "075-000-2220",
-    website: "https://example.com/karasuma",
-    maps: "https://www.google.com/maps/search/?api=1&query=Karasuma+Clinic",
-    x: 62,
-    y: 30,
-  },
-  {
-    id: "kamogawa",
-    name: "鴨川皮ふ科",
-    address: "河原町通沿い",
-    departments: ["dermatology"],
-    open: "09:30-18:00",
-    baseTravel: 18,
-    medianWait: 48,
-    p60: 62,
-    p90: 88,
-    samples: 17,
-    feeLow: 1800,
-    feeHigh: 3800,
-    phone: "075-000-3030",
-    website: "https://example.com/kamogawa",
-    maps: "https://www.google.com/maps/search/?api=1&query=Kamogawa+Dermatology",
-    x: 72,
-    y: 56,
-  },
-  {
-    id: "midorigaoka",
-    name: "みどりヶ丘眼科",
-    address: "大学西門から徒歩11分",
-    departments: ["eye"],
-    open: "08:45-16:30",
-    baseTravel: 11,
-    medianWait: 29,
-    p60: 86,
-    p90: 96,
-    samples: 33,
-    feeLow: 900,
-    feeHigh: 2400,
-    phone: "075-000-4141",
-    website: "https://example.com/midorigaoka",
-    maps: "https://www.google.com/maps/search/?api=1&query=Midorigaoka+Eye+Clinic",
-    x: 22,
-    y: 62,
-  },
-  {
-    id: "sakura",
-    name: "さくらウィメンズクリニック",
-    address: "キャンパス南口から徒歩16分",
-    departments: ["gynecology"],
-    open: "09:00-18:30",
-    baseTravel: 16,
-    medianWait: 42,
-    p60: 74,
-    p90: 91,
-    samples: 21,
-    feeLow: 2200,
-    feeHigh: 5200,
-    phone: "075-000-5151",
-    website: "https://example.com/sakura",
-    maps: "https://www.google.com/maps/search/?api=1&query=Sakura+Womens+Clinic",
-    x: 48,
-    y: 72,
-  },
-];
-
-const bundledFacilities = Array.isArray(window.FACILITY_DATA) && window.FACILITY_DATA.length
-  ? window.FACILITY_DATA
-  : demoHospitals;
-let hospitals = bundledFacilities;
+let hospitals = [];
 
 const state = {
   view: "list",
@@ -146,13 +45,13 @@ const state = {
   visits: [],
   authClient: null,
   authReady: false,
+  loggingOut: false,
   user: null,
   profile: null,
   universities: [],
   reviewFeeds: new Map(),
   universityLocation: null,
   universityOptionIndex: -1,
-  currentLocation: null,
   routeTimes: new Map(),
   routeCache: new Map(),
   resultMap: null,
@@ -160,23 +59,83 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+const signedOutKey = "campusClinicSignedOut";
+
+function explicitlySignedOut() {
+  try {
+    return sessionStorage.getItem(signedOutKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberSignedOut(signedOut) {
+  try {
+    if (signedOut) sessionStorage.setItem(signedOutKey, "1");
+    else sessionStorage.removeItem(signedOutKey);
+  } catch {
+    // SDK logout still runs when browser storage is unavailable.
+  }
+}
+
+function setAccountMenu(open, restoreFocus = false) {
+  const show = Boolean(open && state.user && !$("#appContent").hidden);
+  $("#accountMenu").hidden = !show;
+  $("#accountButton").setAttribute("aria-expanded", String(show));
+  if (!show && restoreFocus) $("#accountButton").focus();
+}
 
 function updateAccessScreen() {
-  const canEnter = Boolean(state.authReady && state.user && state.profile);
+  const canEnter = Boolean(
+    state.authReady && state.user && state.profile?.nickname?.trim(),
+  );
   $("#appContent").hidden = !canEnter;
   $("#loginScreen").hidden = !state.authReady || Boolean(state.user);
   $("#profileScreen").hidden = !state.authReady || !state.user || canEnter;
-  $("#logoutButton").hidden = !state.user;
   if (canEnter) {
-    $("#profileSummary").textContent = `${state.profile.universityName} / ${state.user.name || "ログイン中"}`;
-    $('#originType option[value="university"]').textContent = `自分の大学（${state.profile.universityName}）`;
+    const nickname = state.profile.nickname;
+    $("#accountNickname").textContent = nickname;
+    $("#profileSummary").textContent = state.profile.universityName;
+    $("#accountInitial").textContent = Array.from(nickname)[0];
+    $("#accountButton").setAttribute("aria-label", `${nickname}のアカウント`);
+    let picture = "";
+    try {
+      const url = new URL(state.user.picture);
+      if (url.protocol === "https:") picture = url.href;
+    } catch {
+      // A missing or invalid picture uses the nickname initial.
+    }
+    const avatar = $("#accountAvatar");
+    if (picture && avatar.getAttribute("src") !== picture) avatar.src = picture;
+    if (!picture) avatar.removeAttribute("src");
+    avatar.hidden = !picture || (avatar.complete && avatar.naturalWidth === 0);
+    $("#accountInitial").hidden = !avatar.hidden;
+    $("#searchOrigin").textContent = state.profile.universityName;
+  } else {
+    setAccountMenu(false);
+    $("#accountNickname").textContent = "";
+    $("#profileSummary").textContent = "";
+    $("#accountInitial").textContent = "";
+    $("#accountInitial").hidden = false;
+    $("#accountAvatar").hidden = true;
+    $("#accountAvatar").removeAttribute("src");
+    $("#accountButton").setAttribute("aria-label", "アカウント");
   }
 }
 
 function renderUniversityOptions() {
-  const query = $("#universitySearch").value.normalize("NFKC").toLowerCase().trim();
-  const options = state.universities.filter((university) =>
-    `${university.name} ${university.prefecture}`.normalize("NFKC").toLowerCase().includes(query)).slice(0, 20);
+  const query = $("#universitySearch")
+    .value.normalize("NFKC")
+    .toLowerCase()
+    .trim();
+  const options = state.universities
+    .filter((university) =>
+      `${university.name} ${university.prefecture}`
+        .normalize("NFKC")
+        .toLowerCase()
+        .includes(query),
+    )
+    .slice(0, 20);
   const suggestions = $("#universitySuggestions");
   suggestions.replaceChildren();
   state.universityOptionIndex = -1;
@@ -197,7 +156,8 @@ function renderUniversityOptions() {
       $("#universitySelect").value = university.id;
       $("#universitySearch").value = university.name;
       $("#universitySearch").setCustomValidity("");
-      $("#universitySelection").textContent = `${university.name} / ${university.prefecture}`;
+      $("#universitySelection").textContent =
+        `${university.name} / ${university.prefecture}`;
       closeUniversityOptions();
     });
     suggestions.appendChild(button);
@@ -217,9 +177,19 @@ function closeUniversityOptions() {
 
 async function openProfileRegistration() {
   updateAccessScreen();
+  $("#profileStatus").textContent = "";
   const data = await authorizedFetch("/api/universities");
   state.universities = data.universities;
+  const profile = state.profile;
+  $("#profileNickname").value = profile?.nickname || "";
+  $("#profileGrade").value = profile?.grade || "";
+  $("#profileGender").value = profile?.gender || "";
+  $("#universitySelect").value = profile?.universityId || "";
+  $("#universitySearch").value = profile?.universityName || "";
+  $("#universitySearch").setCustomValidity("");
+  $("#universitySelection").textContent = profile?.universityName || "";
   renderUniversityOptions();
+  closeUniversityOptions();
   $("#accountStatus").textContent = "";
 }
 
@@ -230,23 +200,34 @@ async function enterApplication() {
   selectLatestVisit();
   renderActiveVisit();
   renderCalendar();
-  updateStatus();
   updateAccessScreen();
   $("#accountStatus").textContent = "";
 }
 
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[character]);
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character],
+  );
 }
 
 async function authorizedFetch(path, options = {}) {
-  if (!state.user || !state.authClient) throw new Error("ログインしてください。");
+  if (!state.user || !state.authClient)
+    throw new Error("ログインしてください。");
   const subject = state.user.sub;
   const request = async (refresh) => {
-    const token = await state.authClient.getTokenSilently(refresh ? { cacheMode: "off" } : {});
-    if (state.user?.sub !== subject) throw new Error("ログイン状態が変更されました。");
+    const token = await state.authClient.getTokenSilently(
+      refresh ? { cacheMode: "off" } : {},
+    );
+    if (state.user?.sub !== subject)
+      throw new Error("ログイン状態が変更されました。");
     return fetch(path, {
       ...options,
       headers: { ...options.headers, Authorization: `Bearer ${token}` },
@@ -261,6 +242,8 @@ async function authorizedFetch(path, options = {}) {
     }
   }
   const data = await response.json();
+  if (state.user?.sub !== subject)
+    throw new Error("ログイン状態が変更されました。");
   if (!response.ok) {
     if (response.status === 401) {
       state.user = null;
@@ -284,40 +267,77 @@ async function initializeAuth() {
   updateAccessScreen();
   try {
     const response = await fetch("/api/auth-config");
-    if (response.status === 404) throw new Error("認証APIがありません。python server.py で起動したURLを開いてください。");
+    if (response.status === 404)
+      throw new Error(
+        "認証APIがありません。python server.py で起動したURLを開いてください。",
+      );
     if (!response.ok) throw new Error("ログイン設定を読み込めませんでした。");
     const config = await response.json();
     if (!config.configured) {
-      throw new Error("ログイン設定が未完了です。.env のAuth0設定を確認してサーバーを再起動してください。");
+      throw new Error(
+        "ログイン設定が未完了です。.env のAuth0設定を確認してサーバーを再起動してください。",
+      );
     }
     if (!window.auth0) throw new Error("ログイン機能を読み込めませんでした。");
     state.authClient = new auth0.Auth0Client({
       domain: config.domain,
       clientId: config.clientId,
-      authorizationParams: { redirect_uri: `${location.origin}/`, audience: config.audience },
+      authorizationParams: {
+        redirect_uri: `${location.origin}/`,
+        audience: config.audience,
+        scope: "openid profile email",
+      },
     });
     const parameters = new URLSearchParams(location.search);
-    if (parameters.has("state") && (parameters.has("code") || parameters.has("error"))) {
+    if (
+      parameters.has("state") &&
+      (parameters.has("code") || parameters.has("error"))
+    ) {
       try {
         await state.authClient.handleRedirectCallback();
+        rememberSignedOut(false);
       } finally {
         const cleanUrl = new URL(location.href);
-        ["code", "state", "error", "error_description", "iss", "session_state"].forEach((key) => cleanUrl.searchParams.delete(key));
-        history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+        [
+          "code",
+          "state",
+          "error",
+          "error_description",
+          "iss",
+          "session_state",
+        ].forEach((key) => cleanUrl.searchParams.delete(key));
+        history.replaceState(
+          {},
+          document.title,
+          `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`,
+        );
       }
     } else {
+      if (explicitlySignedOut()) {
+        $("#accountStatus").textContent = "";
+        return;
+      }
       try {
         await state.authClient.checkSession();
       } catch (error) {
-        if (!["login_required", "consent_required", "interaction_required", "missing_refresh_token"].includes(error.error)) throw error;
+        if (
+          ![
+            "login_required",
+            "consent_required",
+            "interaction_required",
+            "missing_refresh_token",
+          ].includes(error.error)
+        )
+          throw error;
       }
     }
     if (await state.authClient.isAuthenticated()) {
       state.user = await state.authClient.getUser();
-      $("#accountStatus").textContent = state.user.name || state.user.email || "ログイン中";
+      $("#accountStatus").textContent =
+        state.user.name || state.user.email || "ログイン中";
       const data = await authorizedFetch("/api/profile");
       state.profile = data.profile;
-      if (state.profile) await enterApplication();
+      if (state.profile?.nickname?.trim()) await enterApplication();
       else await openProfileRegistration();
     } else {
       $("#accountStatus").textContent = "";
@@ -332,7 +352,6 @@ async function initializeAuth() {
   }
   renderActiveVisit();
   renderCalendar();
-  updateStatus();
 }
 
 function minutesFromTime(value) {
@@ -346,7 +365,7 @@ function timeFromDate(date) {
 
 function formatClockMinutes(totalMinutes) {
   const dayOffset = Math.floor(totalMinutes / (24 * 60));
-  const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const normalized = ((totalMinutes % (24 * 60)) + 24 * 60) % (24 * 60);
   const hours = Math.floor(normalized / 60);
   const minutes = normalized % 60;
   const clock = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
@@ -365,24 +384,25 @@ function formatCurrency(value) {
   return `${value.toLocaleString("ja-JP")}円`;
 }
 
-function feeRange(hospital) {
-  if (!Number.isFinite(hospital.feeLow) || !Number.isFinite(hospital.feeHigh)) return "データなし";
-  return `${formatCurrency(hospital.feeLow)}〜${formatCurrency(hospital.feeHigh)}`;
+function feeEstimate(hospital) {
+  if (!Number.isFinite(hospital.averageFeeAmount) || hospital.averageFeeAmount < 0)
+    return "データなし";
+  return `平均 ${formatCurrency(hospital.averageFeeAmount)}`;
 }
 
 function calculateDistanceKm(origin, destination) {
   const toRadians = (value) => (value * Math.PI) / 180;
   const latitudeDelta = toRadians(destination.latitude - origin.latitude);
   const longitudeDelta = toRadians(destination.longitude - origin.longitude);
-  const a = Math.sin(latitudeDelta / 2) ** 2
-    + Math.cos(toRadians(origin.latitude)) * Math.cos(toRadians(destination.latitude))
-    * Math.sin(longitudeDelta / 2) ** 2;
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(toRadians(origin.latitude)) *
+      Math.cos(toRadians(destination.latitude)) *
+      Math.sin(longitudeDelta / 2) ** 2;
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function getSelectedOrigin() {
-  const originType = $("#originType").value;
-  if (originType === "current") return state.currentLocation;
   return state.universityLocation;
 }
 
@@ -398,7 +418,10 @@ function getTravelDurations(hospital) {
   const transportation = $("#transportation").value;
   const distance = getFacilityDistance(hospital);
   const walkingMinutes = (distance / 4.5) * 60;
-  const estimate = Math.max(3, Math.round(walkingMinutes * transportSpeed[transportation]));
+  const estimate = Math.max(
+    3,
+    Math.round(walkingMinutes * transportSpeed[transportation]),
+  );
   return { outbound: estimate, inbound: estimate, source: "estimate" };
 }
 
@@ -413,7 +436,8 @@ async function requestOsrmTable(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`OSRM ${response.status}`);
   const data = await response.json();
-  if (data.code !== "Ok") throw new Error(data.message || "OSRMから経路を取得できませんでした");
+  if (data.code !== "Ok")
+    throw new Error(data.message || "OSRMから経路を取得できませんでした");
   return data;
 }
 
@@ -423,15 +447,24 @@ async function loadOsrmRoutes(hospitalResults) {
   const transportation = $("#transportation").value;
   const server = osrmServers[transportation];
   const cachePrefix = `${transportation}:${origin.latitude.toFixed(5)},${origin.longitude.toFixed(5)}`;
-  const cachedRoutes = hospitalResults.map(({ hospital }) => state.routeCache.get(`${cachePrefix}:${hospital.id}`));
+  const cachedRoutes = hospitalResults.map(({ hospital }) =>
+    state.routeCache.get(`${cachePrefix}:${hospital.id}`),
+  );
   if (cachedRoutes.every(Boolean)) {
-    hospitalResults.forEach(({ hospital }, index) => state.routeTimes.set(hospital.id, cachedRoutes[index]));
+    hospitalResults.forEach(({ hospital }, index) =>
+      state.routeTimes.set(hospital.id, cachedRoutes[index]),
+    );
     return hospitalResults.length;
   }
-  const coordinates = [origin, ...hospitalResults.map(({ hospital }) => hospital)]
+  const coordinates = [
+    origin,
+    ...hospitalResults.map(({ hospital }) => hospital),
+  ]
     .map((point) => `${point.longitude},${point.latitude}`)
     .join(";");
-  const destinationIndexes = hospitalResults.map((_, index) => index + 1).join(";");
+  const destinationIndexes = hospitalResults
+    .map((_, index) => index + 1)
+    .join(";");
   const sourceIndexes = destinationIndexes;
   const baseUrl = `${server}/table/v1/driving/${coordinates}`;
 
@@ -464,7 +497,7 @@ async function loadOsrmRoutes(hospitalResults) {
 }
 
 function getSearchContext() {
-  const startTime = $("#when").value === "now" ? timeFromDate(new Date()) : $("#startTime").value;
+  const startTime = $("#startTime").value;
   const start = minutesFromTime(startTime);
   let returnBy = minutesFromTime($("#returnTime").value);
   if (returnBy < start) returnBy += 24 * 60;
@@ -482,46 +515,24 @@ function setDefaultSearchTimes() {
   $("#returnTime").value = timeFromDate(returnTime);
 }
 
-function getCurrentLocation() {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error("この端末では現在地を取得できません"));
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (position) => resolve({
-        label: "現在地",
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      }),
-      () => reject(new Error("現在地を取得できませんでした。位置情報を許可してください")),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
-    );
-  });
-}
-
 function updateLocationStatus(message) {
   const status = $("#locationStatus");
   if (status) status.textContent = message;
 }
 
 async function ensureSearchOrigin() {
-  const usesCurrentLocation = $("#originType").value === "current";
   if (getSelectedOrigin()) return true;
   const button = $(".search-submit");
   const previousLabel = button.textContent;
   button.disabled = true;
-  button.textContent = usesCurrentLocation ? "現在地を取得しています" : "大学の所在地を取得しています";
+  button.textContent = "大学の所在地を取得しています";
   updateLocationStatus("位置情報を確認しています…");
   try {
-    if (usesCurrentLocation) {
-      state.currentLocation = await getCurrentLocation();
-      updateLocationStatus("現在地を取得しました");
-    } else {
-      const data = await authorizedFetch("/api/university-origin");
-      state.universityLocation = data.origin;
-      updateLocationStatus(`${data.origin.label} / ${data.origin.matchedAddress || data.origin.address}`);
-    }
+    const data = await authorizedFetch("/api/university-origin");
+    state.universityLocation = data.origin;
+    updateLocationStatus(
+      `${data.origin.label} / ${data.origin.matchedAddress || data.origin.address}`,
+    );
     $("#accountStatus").textContent = "";
     return true;
   } catch (error) {
@@ -547,12 +558,18 @@ async function loadNearbyFacilities() {
 
   try {
     const data = await authorizedFetch(`/api/facilities?${parameters}`);
-    hospitals = Array.isArray(data.facilities) ? data.facilities : [];
+    hospitals = Array.isArray(data.facilities)
+      ? data.facilities.filter(
+          (facility) =>
+            ["hospital", "clinic"].includes(facility.type) &&
+            facility.address?.startsWith("宮崎県"),
+        )
+      : [];
     return true;
   } catch (error) {
     console.warn("Facility API lookup failed", error);
     if (error.status === 401 || error.status === 403) throw error;
-    hospitals = bundledFacilities;
+    hospitals = [];
     return false;
   }
 }
@@ -560,11 +577,21 @@ async function loadNearbyFacilities() {
 function evaluateHospital(hospital) {
   const context = getSearchContext();
   const travel = getTravelDurations(hospital);
-  const total = travel.outbound + travel.inbound + hospital.medianWait;
+  const stay = Number.isFinite(hospital.averageStayMinutes) && hospital.averageStayMinutes > 0
+    ? hospital.averageStayMinutes
+    : hospital.medianWait;
+  const total = travel.outbound + travel.inbound + stay;
   const returnAt = context.start + total;
   const remaining = context.returnBy - context.start - total;
-  const fit = remaining >= 30 ? "good" : remaining >= 10 ? "warn" : remaining >= 0 ? "tight" : "bad";
-  return { ...travel, total, returnAt, remaining, fit };
+  const fit =
+    remaining >= 30
+      ? "good"
+      : remaining >= 10
+        ? "warn"
+        : remaining >= 0
+          ? "tight"
+          : "bad";
+  return { ...travel, stay, total, returnAt, remaining, fit };
 }
 
 function fitLabel(fit) {
@@ -581,7 +608,8 @@ function fitClass(fit) {
 }
 
 function returnMessage(estimate) {
-  if (estimate.remaining >= 30) return `予定まで${estimate.remaining}分の余裕があります`;
+  if (estimate.remaining >= 30)
+    return `予定まで${estimate.remaining}分の余裕があります`;
   if (estimate.remaining >= 0) return `予定まで残り${estimate.remaining}分です`;
   return `予定を約${Math.abs(estimate.remaining)}分超える見込みです`;
 }
@@ -591,7 +619,10 @@ function matchingHospitals() {
   return hospitals
     .filter((hospital) => {
       if (getFacilityDistance(hospital) > 12) return false;
-      return ["hospital", "clinic"].includes(hospital.type) && hospital.departments.includes(department);
+      return (
+        ["hospital", "clinic"].includes(hospital.type) &&
+        hospital.departments.includes(department)
+      );
     })
     .map((hospital) => ({ hospital, estimate: evaluateHospital(hospital) }))
     .sort((a, b) => b.estimate.remaining - a.estimate.remaining)
@@ -627,7 +658,8 @@ function renderResultMap(results) {
   }
 
   if (!window.L) {
-    mapSurface.innerHTML = '<div class="map-error">地図を読み込めませんでした。インターネット接続を確認してください。</div>';
+    mapSurface.innerHTML =
+      '<div class="map-error">地図を読み込めませんでした。インターネット接続を確認してください。</div>';
     return;
   }
 
@@ -636,7 +668,8 @@ function renderResultMap(results) {
   const map = L.map(mapSurface, { zoomControl: true });
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(map);
 
   const points = [[origin.latitude, origin.longitude]];
@@ -646,14 +679,14 @@ function renderResultMap(results) {
     weight: 3,
     fillColor: "#1769e0",
     fillOpacity: 1,
-  }).addTo(map).bindTooltip(origin.label, { direction: "top" });
+  })
+    .addTo(map)
+    .bindTooltip(origin.label, { direction: "top" });
 
   results.forEach(({ hospital, estimate }) => {
     const point = [hospital.latitude, hospital.longitude];
     points.push(point);
-    L.marker(point)
-      .addTo(map)
-      .bindPopup(createMapPopup(hospital, estimate));
+    L.marker(point).addTo(map).bindPopup(createMapPopup(hospital, estimate));
   });
 
   state.resultMap = map;
@@ -666,7 +699,10 @@ function refreshResultMapSize() {
   window.setTimeout(() => {
     state.resultMap.invalidateSize();
     if (state.resultMapBounds) {
-      state.resultMap.fitBounds(state.resultMapBounds, { padding: [28, 28], maxZoom: 15 });
+      state.resultMap.fitBounds(state.resultMapBounds, {
+        padding: [28, 28],
+        maxZoom: 15,
+      });
     }
   }, 0);
 }
@@ -674,13 +710,15 @@ function refreshResultMapSize() {
 async function renderResults() {
   state.routeTimes.clear();
   const context = getSearchContext();
-  const startLabel = $("#when").value === "now" ? "今すぐ" : `${$("#startTime").value}出発`;
+  const startLabel = `${$("#startTime").value}出発`;
   const targetLabel = departments[context.department];
-  const originLabel = getSelectedOrigin()?.label || "現在地";
-  $("#searchSummary").textContent = `${originLabel}から / ${targetLabel} / ${startLabel} / ${$("#returnTime").value}まで / ${transportationLabels[$("#transportation").value]}`;
-  $("#routeStatus").className = "route-status loading";
-  $("#routeStatus").textContent = "全国施設DBから周辺の施設を探しています…";
-  $("#results").innerHTML = '<div class="route-loading">周辺施設を検索しています</div>';
+  const originLabel =
+    getSelectedOrigin()?.label || state.profile.universityName;
+  $("#searchSummary").textContent =
+    `${originLabel}から / ${targetLabel} / ${startLabel} / ${$("#returnTime").value}まで / ${transportationLabels[$("#transportation").value]}`;
+
+  $("#results").innerHTML =
+    '<div class="route-loading">周辺施設を検索しています</div>';
   const loadedFromApi = await loadNearbyFacilities();
   let results = matchingHospitals();
   $("#results-title").textContent = `検索結果 ${results.length}件`;
@@ -692,7 +730,7 @@ async function renderResults() {
     }
     $("#routeStatus").className = "route-status warning";
     $("#routeStatus").textContent = loadedFromApi
-      ? "現在地から12km以内に条件に合う施設がありません"
+      ? "大学から12km以内に条件に合う宮崎県の病院・診療所がありません"
       : "施設APIに接続できません。python server.pyで起動してください";
     $("#results").innerHTML = `
       <div class="result-empty">
@@ -704,26 +742,9 @@ async function renderResults() {
     return;
   }
 
-  $("#routeStatus").className = "route-status loading";
-  $("#routeStatus").textContent = "OSRMで往復経路を計算しています…";
-  $("#results").innerHTML = '<div class="route-loading">経路時間を取得しています</div>';
-  const osrmRouteCount = await loadOsrmRoutes(results);
-  results = results
-    .map(({ hospital }) => ({ hospital, estimate: evaluateHospital(hospital) }))
-    .sort((a, b) => b.estimate.remaining - a.estimate.remaining);
-  $("#routeStatus").className = `route-status ${osrmRouteCount === results.length ? "success" : "warning"}`;
-  if (osrmRouteCount === results.length) {
-    $("#routeStatus").textContent = "OpenStreetMapの道路データから往復時間を計算しました";
-  } else if (osrmRouteCount > 0) {
-    $("#routeStatus").textContent = `${osrmRouteCount}件はOSRM経路、残りは直線距離による概算です`;
-  } else {
-    $("#routeStatus").textContent = "OSRMに接続できないため、直線距離による概算を表示しています";
-  }
-  if (!loadedFromApi) {
-    $("#routeStatus").className = "route-status warning";
-    $("#routeStatus").textContent += " / 施設は同梱データを使用しています";
-  }
-  $("#results").innerHTML = results.map(({ hospital, estimate }) => `
+  $("#results").innerHTML = results
+    .map(
+      ({ hospital, estimate }) => `
     <article class="hospital-card">
       <header class="result-card-header">
         <div class="result-name">
@@ -745,7 +766,7 @@ async function renderResults() {
       <div class="time-breakdown" aria-label="所要時間の内訳">
         <div><span>行き</span><strong>${estimate.outbound}分</strong></div>
         <span class="breakdown-separator">＋</span>
-        <div><span>${hospital.type === "pharmacy" ? "薬局滞在" : "院内滞在"}</span><strong>${hospital.medianWait}分</strong></div>
+        <div><span>院内滞在</span><strong>${estimate.stay}分</strong></div>
         <span class="breakdown-separator">＋</span>
         <div><span>帰り</span><strong>${estimate.inbound}分</strong></div>
       </div>
@@ -761,11 +782,7 @@ async function renderResults() {
         </div>
         <div>
           <dt>費用目安</dt>
-          <dd>${feeRange(hospital)}</dd>
-        </div>
-        <div>
-          <dt>実測データ</dt>
-          <dd>${hospital.samples ? `${hospital.samples}件` : "まだありません"}</dd>
+          <dd>${feeEstimate(hospital)}</dd>
         </div>
       </dl>
 
@@ -774,7 +791,9 @@ async function renderResults() {
         <button class="primary-button" type="button" data-plan="${hospital.id}">この施設に行く</button>
       </div>
     </article>
-  `).join("");
+  `,
+    )
+    .join("");
 
   renderResultMap(results);
 }
@@ -782,23 +801,12 @@ async function renderResults() {
 function renderDetail(hospitalId) {
   const hospital = hospitals.find((item) => item.id === hospitalId);
   const estimate = evaluateHospital(hospital);
-  const departmentNames = hospital.departments.map((key) => departments[key] || key).join(" / ");
-  const statsContent = hospital.samples && Number.isFinite(hospital.p60) && Number.isFinite(hospital.p90)
-    ? `
-      <div class="stats-list">
-        ${progressRow("中央値", hospital.medianWait, 90)}
-        ${progressRow("60分以内に終了", hospital.p60, 100, "%")}
-        ${progressRow("90分以内に終了", hospital.p90, 100, "%")}
-      </div>
-    `
-    : `
-      <div class="stats-empty">
-        <strong>実測データはまだありません</strong>
-        <p>現在は施設種別から算出した${hospital.medianWait}分を仮の滞在目安として表示しています。</p>
-      </div>
-    `;
+  const departmentNames = hospital.departments
+    .map((key) => departments[key] || key)
+    .join(" / ");
   state.selectedHospital = hospital;
-  if (canShareReviews()) state.reviewFeeds.set(hospitalId, { posts: [], loading: true });
+  if (canShareReviews())
+    state.reviewFeeds.set(hospitalId, { posts: [], loading: true });
   $("#detail").innerHTML = `
     <article class="detail-panel">
       <div class="detail-grid">
@@ -811,8 +819,8 @@ function renderDetail(hospitalId) {
           <div class="metrics">
             <div class="metric"><span>移動</span><strong>往復${estimate.outbound + estimate.inbound}分</strong></div>
             <div class="metric"><span>目安</span><strong>合計${estimate.total}分</strong></div>
-            <div class="metric"><span>施設区分</span><strong>${facilityTypeLabels[hospital.type] || "医療機関"}</strong></div>
-            <div class="metric"><span>費用</span><strong>${feeRange(hospital)}</strong></div>
+            <div class="metric"><span>診療科</span><strong>${escapeHtml(departmentNames || "掲載なし")}</strong></div>
+            <div class="metric"><span>費用</span><strong>${feeEstimate(hospital)}</strong></div>
           </div>
           <div class="detail-actions">
             <button class="primary-button" type="button" data-plan="${hospital.id}">この施設に行く</button>
@@ -821,9 +829,6 @@ function renderDetail(hospitalId) {
           </div>
         </div>
         <aside>
-          <h3>滞在時間データ</h3>
-          ${statsContent}
-          <p class="muted">${hospital.type === "pharmacy" ? "区分" : "診療科"}: ${departmentNames}</p>
           <p class="muted">出発地点から直線距離: ${getFacilityDistance(hospital).toFixed(2)}km</p>
         </aside>
       </div>
@@ -845,19 +850,10 @@ function renderDetail(hospitalId) {
   if (canShareReviews()) loadHospitalReviews(hospital);
 }
 
-function progressRow(label, value, max, suffix = "分") {
-  const width = Math.min(100, Math.round((value / max) * 100));
-  return `
-    <div class="progress-row">
-      <div class="progress-label"><span>${label}</span><strong>${value}${suffix}</strong></div>
-      <div class="progress-bar"><span style="width:${width}%"></span></div>
-    </div>
-  `;
-}
-
 function planVisit(hospitalId) {
   if (!state.user) {
-    $("#accountStatus").textContent = "受診記録を作成するにはログインしてください。";
+    $("#accountStatus").textContent =
+      "受診記録を作成するにはログインしてください。";
     $("#loginButton").focus();
     return;
   }
@@ -867,7 +863,8 @@ function planVisit(hospitalId) {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     hospitalId,
     hospitalName: hospital.name,
-    department: hospital.type === "pharmacy" ? "pharmacy" : $("#department").value,
+    department:
+      hospital.type === "pharmacy" ? "pharmacy" : $("#department").value,
     status: "planned",
     plannedAt: now.toISOString(),
     arrivalAt: null,
@@ -876,12 +873,17 @@ function planVisit(hospitalId) {
     reservationStatus: "未入力",
     waitingImpression: "未入力",
     note: "",
-    reviewSharing: { published: false, showGrade: true, showReservation: true, showDuration: true, showFee: true },
+    reviewSharing: {
+      published: canShareReviews(),
+      showGrade: true,
+      showReservation: true,
+      showDuration: true,
+      showFee: true,
+    },
   };
   saveActiveVisit();
   navigate("active");
   renderActiveVisit();
-  updateStatus();
 }
 
 function renderActiveVisit() {
@@ -912,6 +914,7 @@ function renderActiveVisit() {
             <input id="manualLeaveAt" type="datetime-local" value="${toDatetimeLocal(visit.leaveAt)}" />
           </label>
           <p class="form-error" id="manualTimeError" aria-live="polite"></p>
+          <div class="manual-duration"><span>院内滞在</span><output id="manualStayMinutes" aria-live="polite">${visit.leaveAt ? `${stayMinutes(visit)}分` : "未確定"}</output></div>
           <button class="secondary-button" type="submit">入力した時刻を反映</button>
         </form>
       </details>
@@ -919,36 +922,39 @@ function renderActiveVisit() {
         <button class="primary-button" type="button" id="arrivalButton" ${visit.arrivalAt ? "disabled" : ""}>現在時刻で到着</button>
         <button class="secondary-button" type="button" id="leaveButton" ${!visit.arrivalAt || visit.leaveAt ? "disabled" : ""}>現在時刻で終了</button>
       </div>
-      ${visit.leaveAt ? completionFields(visit) : ""}
+      <div id="completionFields">${visit.leaveAt ? completionFields(visit) : ""}</div>
     </div>
   `;
-  if (visit.leaveAt) updateReviewPreview();
+  if (visit.leaveAt) {
+    readCompletionDraft();
+    updateReviewValidation();
+  }
 }
 
 function completionFields(visit) {
+  const points = visit.positivePoints || [];
   return `
     <form class="completion-form" id="completionForm">
-      <label>費用（円）
-        <input id="feeAmount" type="number" min="0" max="10000000" step="1" value="${escapeHtml(visit.feeAmount)}" placeholder="1840" />
-      </label>
-      <label>予約
-        <select id="reservationStatus">
-          <option ${visit.reservationStatus === "未入力" ? "selected" : ""}>未入力</option>
-          <option ${visit.reservationStatus === "予約あり" ? "selected" : ""}>予約あり</option>
-          <option ${visit.reservationStatus === "予約なし" ? "selected" : ""}>予約なし</option>
-        </select>
-      </label>
-      <label>待ち時間
-        <select id="waitingImpression">
-          <option ${visit.waitingImpression === "未入力" ? "selected" : ""}>未入力</option>
-          <option ${visit.waitingImpression === "スムーズ" ? "selected" : ""}>スムーズ</option>
-          <option ${visit.waitingImpression === "普通" ? "selected" : ""}>普通</option>
-          <option ${visit.waitingImpression === "待った" ? "selected" : ""}>待った</option>
-        </select>
-      </label>
-      <label>口コミ（任意）
-        <textarea id="visitNote" rows="4" maxlength="2000" placeholder="例：診察と薬で1,840円。待ち時間が短く、説明も丁寧だった。">${escapeHtml(visit.note || "")}</textarea>
-      </label>
+      <fieldset class="review-step">
+        <legend><span>1</span>受診条件を選ぶ<span class="review-required">必須</span></legend>
+        <div class="review-condition-grid">
+          <label>初診・再診<select id="visitType" required>${["未入力", "初診", "再診", "分からない"].map((type) => `<option ${visit.visitType === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
+          <label>予約の有無<select id="reservationStatus" required>${["未入力", "予約あり", "予約なし"].map((value) => `<option ${visit.reservationStatus === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>
+          <label>費用（円・必須）<input id="feeAmount" type="number" min="0" max="10000000" step="1" value="${escapeHtml(visit.feeAmount ?? "")}" placeholder="1840" required /></label>
+        </div>
+      </fieldset>
+      <fieldset class="review-step review-positive-points">
+        <legend><span>2</span>よかった点・助かったことはあった？<span class="review-required">必須</span></legend>
+        ${["説明が分かりやすい", "質問しやすい", "受付が丁寧", "プライバシーへの配慮", "その他", "特になし・分からない"].map((point) => `<label class="review-check"><input type="checkbox" data-positive-point value="${point}" ${points.includes(point) ? "checked" : ""} />${point}</label>`).join("")}
+      </fieldset>
+      <fieldset class="review-step">
+        <legend><span>3</span>そう感じた場面を一言<span class="review-optional">任意</span></legend>
+        <textarea id="sceneText" aria-label="そう感じた場面を一言" rows="3" maxlength="2000" placeholder="薬の使い方を紙に書いて説明してくれた">${escapeHtml(visit.sceneText ?? visit.note ?? "")}</textarea>
+      </fieldset>
+      <fieldset class="review-step">
+        <legend><span>4</span>次に行く学生へ伝えたいこと<span class="review-optional">任意</span></legend>
+        <textarea id="adviceText" aria-label="次に行く学生へ伝えたいこと" rows="3" maxlength="1000" placeholder="初診は時間に余裕を持つとよさそう。気になった点も書けます。">${escapeHtml(visit.adviceText || "")}</textarea>
+      </fieldset>
       ${canShareReviews() ? reviewSharingFields(visit) : ""}
       <button class="primary-button" type="submit">記録を保存</button>
     </form>
@@ -959,28 +965,21 @@ function canShareReviews() {
   return state.profile?.universityId === "F145110111523";
 }
 
-function profileGradeBand() {
+function profileGradeLabel() {
   const grade = state.profile?.grade || "";
-  if (["1", "2"].includes(grade)) return "学部1〜2年";
-  if (["3", "4"].includes(grade)) return "学部3〜4年";
-  if (["5", "6"].includes(grade)) return "学部5〜6年";
-  return /^(master|doctor)/.test(grade) ? "大学院生" : "学生";
+  if (/^[1-6]$/.test(grade)) return `学部${grade}年`;
+  if (/^master[1-2]$/.test(grade)) return `修士${grade.slice(-1)}年`;
+  if (/^doctor[1-3]$/.test(grade)) return `博士${grade.slice(-1)}年`;
+  return "学生";
 }
 
 function reviewSharingFields(visit) {
-  const sharing = { showGrade: true, showReservation: true, showDuration: true, showFee: true, ...visit.reviewSharing };
   return `
     <div class="review-publication">
-      <label class="review-check"><input id="publishReview" type="checkbox" ${sharing.published ? "checked" : ""} />宮大生に口コミを公開する</label>
-      <div id="reviewPublicationDetails" ${sharing.published ? "" : "hidden"}>
-        <p class="review-privacy">公開先は宮崎大学を登録した利用者です。名前・性別・受診日時は公開しません。文章にも個人情報を含めないでください。</p>
-        <fieldset class="review-options">
-          <legend>一緒に公開する項目</legend>
-          ${[["showGrade", "学年帯"], ["showReservation", "予約の有無"], ["showDuration", "滞在時間"], ["showFee", "費用"]].map(([key, label]) => `
-            <label class="review-check"><input type="checkbox" data-review-field="${key}" ${sharing[key] ? "checked" : ""} />${label}</label>
-          `).join("")}
-        </fieldset>
-        <div class="review-preview"><span class="field-label">公開内容の確認</span><div id="reviewPreview"></div></div>
+      <p class="review-publication-note">保存した口コミは宮大生に公開されます。本文に本名や個人情報を含めないでください。</p>
+      <div class="review-time-consent">
+        <label class="review-check"><input id="shareVisitTimes" type="checkbox" aria-describedby="visitTimesPrivacy" ${visit.reviewSharing?.showVisitTimes === true ? "checked" : ""} />受診日時（月日・到着〜終了時刻）も公開する</label>
+        <p id="visitTimesPrivacy">日付・時刻の公開で、あなたの受診が推測される可能性があります。選択しなければ年月のみ公開します。</p>
       </div>
     </div>
   `;
@@ -990,27 +989,41 @@ function readCompletionDraft() {
   const visit = state.activeVisit;
   visit.feeAmount = $("#feeAmount").value;
   visit.reservationStatus = $("#reservationStatus").value;
-  visit.waitingImpression = $("#waitingImpression").value;
-  visit.note = $("#visitNote").value;
-  visit.reviewSharing = { published: Boolean($("#publishReview")?.checked) };
-  document.querySelectorAll("[data-review-field]").forEach((input) => {
-    visit.reviewSharing[input.dataset.reviewField] = input.checked;
-  });
+  visit.reviewVersion = 2;
+  visit.visitType = $("#visitType").value;
+  visit.positivePoints = [
+    ...document.querySelectorAll("[data-positive-point]:checked"),
+  ].map((input) => input.value);
+  visit.sceneText = $("#sceneText").value;
+  visit.adviceText = $("#adviceText").value;
+  visit.nickname = state.profile?.nickname || "";
+  visit.note = "";
+  visit.reviewSharing = {
+    ...visit.reviewSharing,
+    published: canShareReviews(),
+    showVisitTimes: Boolean($("#shareVisitTimes")?.checked),
+  };
 }
 
-function updateReviewPreview() {
-  const preview = $("#reviewPreview");
-  if (!preview) return;
+function updateReviewValidation() {
   const visit = state.activeVisit;
   const sharing = visit.reviewSharing || {};
-  $("#reviewPublicationDetails").hidden = !sharing.published;
-  $("#visitNote").required = sharing.published;
-  $('#completionForm button[type="submit"]').textContent = sharing.published ? "記録を保存して口コミを公開" : "記録を保存";
-  const post = { note: visit.note, gradeBand: sharing.showGrade ? profileGradeBand() : null };
-  if (sharing.showFee) post.feeAmount = visit.feeAmount;
-  if (sharing.showDuration) post.stayMinutes = stayMinutes(visit);
-  if (sharing.showReservation) post.reservationStatus = visit.reservationStatus;
-  preview.innerHTML = reviewContentMarkup(post);
+  $("#visitType").setCustomValidity(
+    visit.visitType === "未入力"
+      ? "初診・再診を選択してください。"
+      : "",
+  );
+  $("#reservationStatus").setCustomValidity(
+    visit.reservationStatus === "未入力" ? "予約の有無を選択してください。" : "",
+  );
+  $("[data-positive-point]").setCustomValidity(
+    !visit.positivePoints.length
+      ? "よかった点、または「特になし・分からない」を選択してください。"
+      : "",
+  );
+  $('#completionForm button[type="submit"]').textContent = sharing.published
+    ? "記録を保存して口コミを投稿"
+    : "記録を保存";
 }
 
 function markArrival() {
@@ -1019,46 +1032,73 @@ function markArrival() {
   state.activeVisit.status = "measuring";
   saveActiveVisit();
   renderActiveVisit();
-  updateStatus();
 }
 
 function markLeave() {
+  if (!synchronizeManualTimes()) return;
   state.activeVisit.leaveAt = new Date().toISOString();
   state.activeVisit.leaveMethod = "button";
   state.activeVisit.status = "completed";
   saveActiveVisit();
   renderActiveVisit();
-  updateStatus();
 }
 
 function applyManualTimes(event) {
   event.preventDefault();
-  if (!state.activeVisit) return;
+  if (synchronizeManualTimes()) renderActiveVisit();
+}
 
-  const arrivalValue = $("#manualArrivalAt").value;
-  const leaveValue = $("#manualLeaveAt").value;
+function synchronizeManualTimes(requireLeave = false) {
+  const visit = state.activeVisit;
+  if (!visit) return false;
+
+  const arrivalInput = $("#manualArrivalAt");
+  const leaveInput = $("#manualLeaveAt");
+  const arrivalValue = arrivalInput.value;
+  const leaveValue = leaveInput.value;
   const error = $("#manualTimeError");
-  const arrivalAt = new Date(arrivalValue);
-  const leaveAt = leaveValue ? new Date(leaveValue) : null;
+  const output = $("#manualStayMinutes");
+  // Keep button timestamps at full precision until their displayed values change.
+  const arrivalAt = new Date(arrivalValue === toDatetimeLocal(visit.arrivalAt) ? visit.arrivalAt : arrivalValue);
+  const leaveAt = leaveValue
+    ? new Date(leaveValue === toDatetimeLocal(visit.leaveAt) ? visit.leaveAt : leaveValue)
+    : null;
+  const invalid = (message) => {
+    error.textContent = message;
+    output.textContent = "未確定";
+    return false;
+  };
 
-  if (!arrivalValue || Number.isNaN(arrivalAt.getTime())) {
-    error.textContent = "到着日時を入力してください。";
-    return;
+  if (!arrivalValue || !arrivalInput.validity.valid || Number.isNaN(arrivalAt.getTime())) {
+    return invalid("到着日時を入力してください。");
   }
-
-  if (leaveAt && (Number.isNaN(leaveAt.getTime()) || leaveAt < arrivalAt)) {
-    error.textContent = "終了日時は到着日時より後にしてください。";
-    return;
+  if (!leaveInput.validity.valid || (leaveAt && (Number.isNaN(leaveAt.getTime()) || leaveAt < arrivalAt))) {
+    return invalid("終了日時は到着日時より後にしてください。");
   }
+  if (requireLeave && !leaveAt) return invalid("受診終了日時を入力してください。");
 
-  state.activeVisit.arrivalAt = arrivalAt.toISOString();
-  state.activeVisit.leaveAt = leaveAt ? leaveAt.toISOString() : null;
-  state.activeVisit.arrivalMethod = "manual";
-  state.activeVisit.leaveMethod = leaveAt ? "manual" : null;
-  state.activeVisit.status = leaveAt ? "completed" : "measuring";
+  if ($("#completionForm")) readCompletionDraft();
+  const arrivalIso = arrivalAt.toISOString();
+  const leaveIso = leaveAt ? leaveAt.toISOString() : null;
+  if (arrivalIso !== visit.arrivalAt) visit.arrivalMethod = "manual";
+  if (leaveIso !== visit.leaveAt) visit.leaveMethod = leaveAt ? "manual" : null;
+  visit.arrivalAt = arrivalIso;
+  visit.leaveAt = leaveIso;
+  visit.status = leaveAt ? "completed" : "measuring";
+  visit.stayMinutes = stayMinutes(visit);
+  error.textContent = "";
+  output.textContent = leaveAt ? `${visit.stayMinutes}分` : "未確定";
+  $("#arrivalButton").disabled = Boolean(visit.arrivalAt);
+  $("#leaveButton").disabled = !visit.arrivalAt || Boolean(visit.leaveAt);
+  if (leaveAt && !$("#completionForm")) {
+    $("#completionFields").innerHTML = completionFields(visit);
+    readCompletionDraft();
+    updateReviewValidation();
+  } else if (!leaveAt && $("#completionForm")) {
+    $("#completionFields").innerHTML = "";
+  }
   saveActiveVisit();
-  renderActiveVisit();
-  updateStatus();
+  return true;
 }
 
 async function completeVisit(event) {
@@ -1067,6 +1107,10 @@ async function completeVisit(event) {
   if (!savingUser || !state.activeVisit) return;
   const button = event.target.querySelector('button[type="submit"]');
   if (button.disabled) return;
+  if (!synchronizeManualTimes(true)) {
+    $("#manualTimeError").scrollIntoView({ block: "center" });
+    return;
+  }
   button.disabled = true;
   readCompletionDraft();
   state.activeVisit.note = state.activeVisit.note.trim();
@@ -1097,17 +1141,22 @@ async function completeVisit(event) {
   selectLatestVisit();
   renderActiveVisit();
   renderCalendar();
-  updateStatus();
   navigate("log");
 }
 
 function stayMinutes(visit) {
   if (!visit.arrivalAt || !visit.leaveAt) return 0;
-  return Math.max(1, Math.round((new Date(visit.leaveAt) - new Date(visit.arrivalAt)) / 60000));
+  return Math.max(
+    1,
+    Math.round((new Date(visit.leaveAt) - new Date(visit.arrivalAt)) / 60000),
+  );
 }
 
 function formatTime(value) {
-  return new Date(value).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+  return new Date(value).toLocaleTimeString("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function toDatetimeLocal(value) {
@@ -1118,17 +1167,28 @@ function toDatetimeLocal(value) {
 }
 
 function formatDate(value) {
-  return new Date(value).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+  return new Date(value).toLocaleDateString("ja-JP", {
+    month: "numeric",
+    day: "numeric",
+  });
 }
 
 function navigate(screen) {
+  setAccountMenu(false);
   if (!state.user || !state.profile) {
     updateAccessScreen();
     return;
   }
-  document.querySelectorAll(".screen").forEach((item) => item.classList.remove("active"));
-  const tabScreen = screen === "results" || screen === "detail" ? "search" : screen;
-  document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item.dataset.nav === tabScreen));
+  document
+    .querySelectorAll(".screen")
+    .forEach((item) => item.classList.remove("active"));
+  const tabScreen =
+    screen === "results" || screen === "detail" ? "search" : screen;
+  document
+    .querySelectorAll(".tab")
+    .forEach((item) =>
+      item.classList.toggle("active", item.dataset.nav === tabScreen),
+    );
   $(`#screen-${screen}`).classList.add("active");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -1151,9 +1211,11 @@ function renderCalendar() {
 
   const selectedParts = state.selectedDate.split("-").map(Number);
   if (selectedParts[0] !== year || selectedParts[1] !== month + 1) {
-    const latestVisit = [...monthVisits].sort((a, b) => (
-      new Date(b.arrivalAt || b.plannedAt) - new Date(a.arrivalAt || a.plannedAt)
-    ))[0];
+    const latestVisit = [...monthVisits].sort(
+      (a, b) =>
+        new Date(b.arrivalAt || b.plannedAt) -
+        new Date(a.arrivalAt || a.plannedAt),
+    )[0];
     state.selectedDate = latestVisit
       ? dateKey(new Date(latestVisit.arrivalAt || latestVisit.plannedAt))
       : `${year}-${String(month + 1).padStart(2, "0")}-01`;
@@ -1165,7 +1227,9 @@ function renderCalendar() {
   const cells = names.map((name) => `<div class="day-name">${name}</div>`);
 
   for (let i = 0; i < blanks; i += 1) {
-    cells.push('<button class="day-cell empty" type="button" tabindex="-1"></button>');
+    cells.push(
+      '<button class="day-cell empty" type="button" tabindex="-1"></button>',
+    );
   }
 
   for (let day = 1; day <= days; day += 1) {
@@ -1187,8 +1251,13 @@ function renderCalendar() {
 }
 
 function renderMonthlySummary(monthVisits) {
-  const totalMinutes = monthVisits.reduce((sum, visit) => sum + (visit.stayMinutes || stayMinutes(visit)), 0);
-  const avg = monthVisits.length ? Math.round(totalMinutes / monthVisits.length) : 0;
+  const totalMinutes = monthVisits.reduce(
+    (sum, visit) => sum + (visit.stayMinutes || stayMinutes(visit)),
+    0,
+  );
+  const avg = monthVisits.length
+    ? Math.round(totalMinutes / monthVisits.length)
+    : 0;
   $("#monthlySummary").innerHTML = `
     <div class="summary-item"><span>受診回数</span><strong>${monthVisits.length}<small>回</small></strong></div>
     <div class="summary-item"><span>滞在時間</span><strong>${totalMinutes}<small>分</small></strong></div>
@@ -1224,9 +1293,10 @@ function visitRecordMarkup(visit, showDate = false) {
         <div><dt>受診時間</dt><dd>${formatTime(visit.arrivalAt)}〜${formatTime(visit.leaveAt)}</dd></div>
         <div><dt>費用</dt><dd>${visit.feeAmount ? formatCurrency(Number(visit.feeAmount)) : "未入力"}</dd></div>
         <div><dt>予約</dt><dd>${visit.reservationStatus}</dd></div>
-        <div><dt>待ち時間</dt><dd>${visit.waitingImpression}</dd></div>
+        ${visit.visitType && visit.visitType !== "未入力" ? `<div><dt>受診区分</dt><dd>${escapeHtml(visit.visitType)}</dd></div>` : ""}
+        <div><dt>待ち時間</dt><dd>${visit.waitingMinutes != null ? `${Number(visit.waitingMinutes)}分` : escapeHtml(visit.waitingImpression)}</dd></div>
       </dl>
-      ${visit.note ? `<p class="review-note">${escapeHtml(visit.note)}</p>` : ""}
+      ${reviewTextMarkup(visit)}
       <div class="record-sharing">
         <span>${visit.reviewSharing?.published ? "口コミを公開中" : "自分だけの記録"}</span>
         ${visit.reviewSharing?.published ? `<button class="secondary-button" type="button" data-unpublish="${escapeHtml(visit.id)}">口コミの公開を取り消す</button>` : ""}
@@ -1248,7 +1318,11 @@ function renderMonthDetails(visits, year, month) {
   }
 
   $("#monthDetails").innerHTML = [...visits]
-    .sort((a, b) => new Date(b.arrivalAt || b.plannedAt) - new Date(a.arrivalAt || a.plannedAt))
+    .sort(
+      (a, b) =>
+        new Date(b.arrivalAt || b.plannedAt) -
+        new Date(a.arrivalAt || a.plannedAt),
+    )
     .map((visit) => visitRecordMarkup(visit, true))
     .join("");
 }
@@ -1265,55 +1339,147 @@ function renderDayDetails(visits) {
     `;
     return;
   }
-  $("#dayDetails").innerHTML = visits.map((visit) => visitRecordMarkup(visit)).join("");
+  $("#dayDetails").innerHTML = visits
+    .map((visit) => visitRecordMarkup(visit))
+    .join("");
 }
 
 function getHospitalReviews(hospital) {
   const records = state.visits
-    .filter((visit) => visit.hospitalId === hospital.id && visit.id !== "demo" && !visit.reviewSharing?.published)
-    .sort((a, b) => new Date(b.arrivalAt || b.plannedAt) - new Date(a.arrivalAt || a.plannedAt))
+    .filter(
+      (visit) =>
+        visit.hospitalId === hospital.id &&
+        visit.id !== "demo" &&
+        !visit.reviewSharing?.published,
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.arrivalAt || b.plannedAt) -
+        new Date(a.arrivalAt || a.plannedAt),
+    )
     .map((visit) => ({
       ...visit,
       id: `visit:${visit.id}`,
       visitedAt: `${formatDate(visit.arrivalAt || visit.plannedAt)} ${formatTime(visit.arrivalAt || visit.plannedAt)}`,
       stayMinutes: visit.stayMinutes || stayMinutes(visit),
-      feeAmount: visit.feeAmount === "" || visit.feeAmount == null ? null : Number(visit.feeAmount),
+      feeAmount:
+        visit.feeAmount === "" || visit.feeAmount == null
+          ? null
+          : Number(visit.feeAmount),
       isOwnRecord: true,
       privateRecord: true,
-      gradeBand: profileGradeBand(),
+      gradeLabel: profileGradeLabel(),
+      visitedMonth: reviewMonth(visit.arrivalAt || visit.plannedAt),
     }));
 
   return [...(state.reviewFeeds.get(hospital.id)?.posts || []), ...records];
 }
 
-function reviewContentMarkup(post) {
+function reviewMonth(value) {
+  if (!value) return "";
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+    })
+      .formatToParts(new Date(value))
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}`;
+}
+
+function reviewTextMarkup(post, includePoints = true) {
   return `
-    <div class="review-author"><strong>${escapeHtml(post.gradeBand || "宮崎大学生")}</strong>${post.reservationStatus ? `<span>${escapeHtml(post.reservationStatus)}</span>` : ""}</div>
-    <dl class="review-metrics">
-      ${post.stayMinutes != null ? `<div><dt>滞在時間</dt><dd>${Number(post.stayMinutes)}<small>分</small></dd></div>` : ""}
-      ${post.feeAmount != null ? `<div><dt>費用</dt><dd>${post.feeAmount === "" ? "未入力" : formatCurrency(Number(post.feeAmount))}</dd></div>` : ""}
-    </dl>
+    ${includePoints && post.positivePoints?.length ? `<ul class="review-point-list" aria-label="よかった点">${post.positivePoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
+    ${post.sceneText ? `<div class="review-narrative"><h5>よかった点の具体的なエピソード</h5><p class="review-note">${escapeHtml(post.sceneText)}</p></div>` : ""}
+    ${post.adviceText ? `<div class="review-narrative"><h5>次に行く学生へ</h5><p class="review-note">${escapeHtml(post.adviceText)}</p></div>` : ""}
     ${post.note ? `<p class="review-note">${escapeHtml(post.note)}</p>` : ""}
   `;
+}
+
+function reviewContentMarkup(post) {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(post.visitedMonth || "")
+    ? `${post.visitedMonth.slice(0, 4)}年${Number(post.visitedMonth.slice(5))}月`
+    : "";
+  const nickname = String(post.nickname || (post.privateRecord ? "自分の記録" : "宮大生"));
+  const conditions = [post.visitType, post.reservationStatus]
+    .filter((value) => value && value !== "未入力");
+  const metrics = [
+    post.waitingMinutes != null ? `<div><dt>待ち時間</dt><dd>${Number(post.waitingMinutes)}<small>分</small></dd></div>` : "",
+    post.stayMinutes != null ? `<div><dt>院内滞在</dt><dd>${Number(post.stayMinutes)}<small>分</small></dd></div>` : "",
+    post.feeAmount != null && post.feeAmount !== "" ? `<div><dt>費用</dt><dd>${formatCurrency(Number(post.feeAmount))}</dd></div>` : "",
+  ].filter(Boolean);
+  const points = post.positivePoints || [];
+  const text = reviewTextMarkup(post, false);
+  const visitTimes = reviewVisitTimesMarkup(post);
+  return `
+    <header class="community-card-header">
+      <span class="review-avatar ${post.isOwnRecord ? "review-avatar-own" : ""}" aria-hidden="true">${escapeHtml(Array.from(nickname)[0])}</span>
+      <div class="review-author">
+        <strong>${escapeHtml(nickname)}</strong>
+        ${post.gradeLabel || post.gradeBand ? `<span>${escapeHtml(post.gradeLabel || post.gradeBand)}</span>` : ""}
+      </div>
+      ${month && !visitTimes ? `<div class="review-month"><time datetime="${escapeHtml(post.visitedMonth)}" aria-label="受診した月">${month}</time></div>` : ""}
+    </header>
+    ${visitTimes}
+    ${post.universityEmailVerified === true ? '<span class="review-verified">宮崎大学メール認証済み</span>' : ""}
+    ${conditions.length || points.length ? `<ul class="review-point-list review-tags" aria-label="受診条件とよかった点">${conditions.map((value) => `<li class="review-condition">${escapeHtml(value)}</li>`).join("")}${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
+    ${text.trim() ? `<div class="review-body">${text}</div>` : ""}
+    ${metrics.length ? `<dl class="review-metrics">${metrics.join("")}</dl>` : ""}
+  `;
+}
+
+function reviewVisitTimesMarkup(post) {
+  if (!post.arrivalAt || !post.leaveAt) return "";
+  const arrival = new Date(post.arrivalAt);
+  const leave = new Date(post.leaveAt);
+  if (!Number.isFinite(arrival.getTime()) || !Number.isFinite(leave.getTime()) || leave < arrival) return "";
+  const dateFormat = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric",
+  });
+  const timeFormat = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  });
+  const arrivalDate = dateFormat.format(arrival);
+  const leaveDate = dateFormat.format(leave);
+  return `<div class="review-visit-times"><span>受診日時</span><div><time datetime="${escapeHtml(post.arrivalAt)}">${arrivalDate} ${timeFormat.format(arrival)}</time><span>〜</span><time datetime="${escapeHtml(post.leaveAt)}">${arrivalDate === leaveDate ? "" : `${leaveDate} `}${timeFormat.format(leave)}</time></div></div>`;
 }
 
 function renderReviewCards(hospital) {
   const posts = getHospitalReviews(hospital);
   const feed = state.reviewFeeds.get(hospital.id);
-  const status = feed?.loading ? '<p class="muted" role="status">口コミを読み込み中</p>' : feed?.error ? `<p class="form-error" role="status">${escapeHtml(feed.error)}</p><button class="secondary-button" type="button" data-retry-reviews>再読み込み</button>` : "";
-  return status + (posts.length ? posts.map((post) => `
-    <article class="community-card">
+  const status = feed?.loading
+    ? '<p class="muted" role="status">口コミを読み込み中</p>'
+    : feed?.error
+      ? `<p class="form-error" role="status">${escapeHtml(feed.error)}</p><button class="secondary-button" type="button" data-retry-reviews>再読み込み</button>`
+      : "";
+  return (
+    status +
+    (posts.length
+      ? posts
+          .map(
+            (post) => `
+    <article class="community-card ${post.privateRecord ? "review-private" : post.isOwnRecord ? "review-own" : ""}">
       <span class="review-visibility">${post.privateRecord ? "自分の記録・非公開" : post.isOwnRecord ? "自分の口コミ・公開中" : "宮大生の口コミ"}</span>
       ${reviewContentMarkup(post)}
     </article>
-  `).join("") : feed?.loading || feed?.error ? "" : '<div class="empty-record"><strong>この病院の口コミはまだありません</strong></div>');
+  `,
+          )
+          .join("")
+      : feed?.loading || feed?.error
+        ? ""
+        : '<div class="empty-record"><strong>この病院の口コミはまだありません</strong></div>')
+  );
 }
 
 async function loadHospitalReviews(hospital) {
   const subject = state.user?.sub;
   state.reviewFeeds.set(hospital.id, { posts: [], loading: true });
   try {
-    const data = await authorizedFetch(`/api/reviews?${new URLSearchParams({ hospitalId: hospital.id })}`);
+    const data = await authorizedFetch(
+      `/api/reviews?${new URLSearchParams({ hospitalId: hospital.id })}`,
+    );
     if (state.user?.sub !== subject) return;
     state.reviewFeeds.set(hospital.id, { posts: data.reviews });
   } catch (error) {
@@ -1330,25 +1496,20 @@ async function unpublishReview(button) {
   const subject = state.user?.sub;
   button.disabled = true;
   try {
-    const data = await authorizedFetch(`/api/reviews?${new URLSearchParams({ visitId: button.dataset.unpublish })}`, { method: "DELETE" });
+    const data = await authorizedFetch(
+      `/api/reviews?${new URLSearchParams({ visitId: button.dataset.unpublish })}`,
+      { method: "DELETE" },
+    );
     if (state.user?.sub !== subject) return;
-    state.visits = state.visits.map((visit) => visit.id === data.visit.id ? data.visit : visit);
+    state.visits = state.visits.map((visit) =>
+      visit.id === data.visit.id ? data.visit : visit,
+    );
     state.reviewFeeds.clear();
     renderCalendar();
   } catch (error) {
     $("#accountStatus").textContent = error.message;
     button.disabled = false;
   }
-}
-
-function updateStatus() {
-  const pill = $("#visitStatus");
-  if (!state.activeVisit) {
-    pill.textContent = "受診予定なし";
-    return;
-  }
-  const label = state.activeVisit.status === "planned" ? "移動中" : "計測中";
-  pill.textContent = `${label}: ${state.activeVisit.hospitalName}`;
 }
 
 function activeVisitStorageKey() {
@@ -1358,21 +1519,55 @@ function activeVisitStorageKey() {
 function loadActiveVisit() {
   if (!state.user) return;
   try {
-    state.activeVisit = JSON.parse(localStorage.getItem(activeVisitStorageKey()) || "null");
+    state.activeVisit = JSON.parse(
+      localStorage.getItem(activeVisitStorageKey()) || "null",
+    );
   } catch {
     state.activeVisit = null;
   }
 }
 
 function saveActiveVisit() {
-  if (state.user) localStorage.setItem(activeVisitStorageKey(), JSON.stringify(state.activeVisit));
+  if (state.user)
+    localStorage.setItem(
+      activeVisitStorageKey(),
+      JSON.stringify(state.activeVisit),
+    );
 }
 
 function bindEvents() {
+  $("#accountButton").addEventListener("click", () => setAccountMenu($("#accountMenu").hidden));
+  $("#accountButton").addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setAccountMenu(true);
+      $("#logoutButton").focus();
+    }
+  });
+  $("#accountControl").addEventListener("focusout", (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setAccountMenu(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("#accountMenu").hidden) {
+      event.preventDefault();
+      setAccountMenu(false, true);
+    }
+  });
+  $("#accountAvatar").addEventListener("load", () => {
+    if (!state.user || !$("#accountAvatar").getAttribute("src")) return;
+    $("#accountAvatar").hidden = false;
+    $("#accountInitial").hidden = true;
+  });
+  $("#accountAvatar").addEventListener("error", () => {
+    $("#accountAvatar").hidden = true;
+    $("#accountInitial").hidden = false;
+  });
   $("#signupButton").addEventListener("click", async () => {
-    if (!state.authClient) return;
+    if (!state.authClient || state.loggingOut) return;
     try {
-      await state.authClient.loginWithRedirect({ authorizationParams: { screen_hint: "signup" } });
+      await state.authClient.loginWithRedirect({
+        authorizationParams: { screen_hint: "signup", ...(explicitlySignedOut() ? { prompt: "login" } : {}) },
+      });
     } catch (error) {
       $("#accountStatus").textContent = error.message;
     }
@@ -1380,7 +1575,9 @@ function bindEvents() {
   $("#universitySearch").addEventListener("input", () => {
     $("#universitySelect").value = "";
     $("#universitySelection").textContent = "";
-    $("#universitySearch").setCustomValidity("候補から大学を選択してください。");
+    $("#universitySearch").setCustomValidity(
+      "候補から大学を選択してください。",
+    );
     renderUniversityOptions();
   });
   $("#universitySearch").addEventListener("focus", renderUniversityOptions);
@@ -1392,8 +1589,15 @@ function bindEvents() {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const direction = event.key === "ArrowDown" ? 1 : -1;
-      state.universityOptionIndex = (state.universityOptionIndex + direction + buttons.length) % buttons.length;
-      buttons.forEach((button, index) => button.setAttribute("aria-selected", String(index === state.universityOptionIndex)));
+      state.universityOptionIndex =
+        (state.universityOptionIndex + direction + buttons.length) %
+        buttons.length;
+      buttons.forEach((button, index) =>
+        button.setAttribute(
+          "aria-selected",
+          String(index === state.universityOptionIndex),
+        ),
+      );
       const active = buttons[state.universityOptionIndex];
       $("#universitySearch").setAttribute("aria-activedescendant", active.id);
       active.scrollIntoView({ block: "nearest" });
@@ -1404,66 +1608,116 @@ function bindEvents() {
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".university-picker")) closeUniversityOptions();
+    if (!event.target.closest("#accountControl")) setAccountMenu(false);
   });
   $("#profileForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const button = event.target.querySelector('button[type="submit"]');
+    const form = event.target;
+    const button = form.querySelector('button[type="submit"]');
+    const status = $("#profileStatus");
     const subject = state.user?.sub;
     if (button.disabled || !subject) return;
-    if (!$("#universitySelect").value) {
-      $("#universitySearch").setCustomValidity("候補から大学を選択してください。");
-      $("#universitySearch").reportValidity();
+    $("#profileNickname").setCustomValidity(
+      $("#profileNickname").value.trim()
+        ? ""
+        : "ニックネームを入力してください。",
+    );
+    $("#universitySearch").setCustomValidity(
+      $("#universitySelect").value ? "" : "候補から大学を選択してください。",
+    );
+    $("#profileGrade").setCustomValidity(
+      $("#profileGrade").value ? "" : "学年を選択してください。",
+    );
+    $("#profileGender").setCustomValidity(
+      $("#profileGender").value
+        ? ""
+        : "性別または「回答しない」を選択してください。",
+    );
+    const invalidInput = form.querySelector(":invalid");
+    if (invalidInput) {
+      status.textContent = invalidInput.validationMessage;
+      invalidInput.focus();
       return;
     }
+    status.textContent = "";
+    $("#accountStatus").textContent = "";
     button.disabled = true;
+    button.textContent = "登録中…";
+    form.setAttribute("aria-busy", "true");
     try {
       const data = await authorizedFetch("/api/profile", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ universityId: $("#universitySelect").value,
-          grade: $("#profileGrade").value, gender: $("#profileGender").value }),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          universityId: $("#universitySelect").value,
+          grade: $("#profileGrade").value,
+          gender: $("#profileGender").value,
+          nickname: $("#profileNickname").value.trim(),
+        }),
       });
       if (state.user?.sub !== subject) return;
+      if (!data.profile?.nickname?.trim()) {
+        throw new Error(
+          "ニックネームを保存できませんでした。サーバーを再起動してから、もう一度登録してください。",
+        );
+      }
       state.profile = data.profile;
       await enterApplication();
       navigate("search");
     } catch (error) {
-      $("#accountStatus").textContent = error.message;
+      status.textContent = error.message;
+      if ($("#profileScreen").hidden)
+        $("#accountStatus").textContent = error.message;
     } finally {
       button.disabled = false;
+      button.textContent = "登録して始める";
+      form.removeAttribute("aria-busy");
     }
   });
   $("#loginButton").addEventListener("click", async () => {
-    if (!state.authClient) return;
+    if (!state.authClient || state.loggingOut) return;
     try {
-      await state.authClient.loginWithRedirect();
+      await state.authClient.loginWithRedirect(explicitlySignedOut()
+        ? { authorizationParams: { prompt: "login" } }
+        : undefined);
     } catch (error) {
       $("#accountStatus").textContent = error.message;
     }
   });
   const logout = async () => {
+    if (state.loggingOut) return;
+    state.loggingOut = true;
+    rememberSignedOut(true);
     const client = state.authClient;
     state.user = null;
     state.profile = null;
     state.universityLocation = null;
-    state.currentLocation = null;
-    $("#originType").value = "university";
     state.visits = [];
     state.reviewFeeds.clear();
     state.activeVisit = null;
     state.selectedHospital = null;
-    $("#detail").innerHTML = "";
-    renderActiveVisit();
-    renderCalendar();
-    updateStatus();
-    navigate("search");
     $("#accountStatus").textContent = "";
-    $("#logoutButton").hidden = true;
-    $("#loginButton").hidden = false;
     updateAccessScreen();
+    $("#loginButton").disabled = true;
+    $("#signupButton").disabled = true;
     try {
-      await client.logout({ logoutParams: { returnTo: `${location.origin}/` } });
-    } catch (error) {
-      $("#accountStatus").textContent = error.message;
+      if (client) await client.logout({
+        logoutParams: { returnTo: `${location.origin}/` },
+      });
+    } catch {
+      $("#accountStatus").textContent = "アプリからログアウトしました。Auth0との通信を完了できなかったため、次回ログイン時は認証し直してください。";
+    } finally {
+      state.loggingOut = false;
+      $("#loginButton").disabled = !client;
+      $("#signupButton").disabled = !client;
+      hospitals = [];
+      state.routeTimes.clear();
+      state.routeCache.clear();
+      if (state.resultMap) state.resultMap.remove();
+      state.resultMap = null;
+      state.resultMapBounds = null;
+      document.querySelectorAll("#detail, #results, #activeVisit, #monthDetails, #dayDetails, #monthlySummary, #calendar").forEach((element) => element.replaceChildren());
+      $("#profileForm").reset();
     }
   };
   $("#logoutButton").addEventListener("click", logout);
@@ -1471,34 +1725,13 @@ function bindEvents() {
   $("#searchForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!state.user || !state.profile) return;
-    if (!await ensureSearchOrigin()) return;
+    if (!(await ensureSearchOrigin())) return;
     navigate("results");
     try {
       await renderResults();
     } catch (error) {
       $("#accountStatus").textContent = error.message;
     }
-  });
-
-  document.querySelectorAll("[data-when]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const isScheduled = button.dataset.when === "time";
-      $("#when").value = button.dataset.when;
-      $("#scheduledTimeField").hidden = !isScheduled;
-      document.querySelectorAll("[data-when]").forEach((item) => {
-        const isActive = item === button;
-        item.classList.toggle("active", isActive);
-        item.setAttribute("aria-pressed", String(isActive));
-      });
-      if (isScheduled) $("#startTime").focus();
-    });
-  });
-
-  $("#originType").addEventListener("change", () => {
-    const usesCurrentLocation = $("#originType").value === "current";
-    updateLocationStatus(usesCurrentLocation
-      ? "検索時に位置情報の許可が必要です"
-      : `${state.profile.universityName}の登録所在地から検索します`);
   });
 
   document.body.addEventListener("click", (event) => {
@@ -1510,7 +1743,8 @@ function bindEvents() {
     const unpublishButton = event.target.closest("[data-unpublish]");
 
     if (unpublishButton) unpublishReview(unpublishButton);
-    if (event.target.closest("[data-retry-reviews]") && state.selectedHospital) renderDetail(state.selectedHospital.id);
+    if (event.target.closest("[data-retry-reviews]") && state.selectedHospital)
+      renderDetail(state.selectedHospital.id);
     if (detailButton) renderDetail(detailButton.dataset.detail);
     if (planButton) planVisit(planButton.dataset.plan);
     if (navButton) navigate(navButton.dataset.nav);
@@ -1530,9 +1764,24 @@ function bindEvents() {
   });
 
   document.body.addEventListener("input", (event) => {
-    if (!state.activeVisit || !event.target.closest("#completionForm")) return;
+    if (!state.activeVisit) return;
+    if (event.target.closest("#manualTimeForm")) {
+      synchronizeManualTimes();
+      return;
+    }
+    if (!event.target.closest("#completionForm")) return;
+    if (event.target.matches("[data-positive-point]") && event.target.checked) {
+      const isNone = event.target.value === "特になし・分からない";
+      document.querySelectorAll("[data-positive-point]").forEach((input) => {
+        if (
+          input !== event.target &&
+          (isNone || input.value === "特になし・分からない")
+        )
+          input.checked = false;
+      });
+    }
     readCompletionDraft();
-    updateReviewPreview();
+    updateReviewValidation();
     saveActiveVisit();
   });
 
@@ -1544,7 +1793,9 @@ function bindEvents() {
   document.querySelectorAll(".seg").forEach((button) => {
     button.addEventListener("click", () => {
       state.view = button.dataset.view;
-      document.querySelectorAll(".seg").forEach((item) => item.classList.toggle("active", item === button));
+      document
+        .querySelectorAll(".seg")
+        .forEach((item) => item.classList.toggle("active", item === button));
       $("#results").hidden = state.view !== "list";
       $("#mapView").hidden = state.view !== "map";
       if (state.view === "map") refreshResultMapSize();
@@ -1552,12 +1803,20 @@ function bindEvents() {
   });
 
   $("#prevMonth").addEventListener("click", () => {
-    state.calendarDate = new Date(state.calendarDate.getFullYear(), state.calendarDate.getMonth() - 1, 1);
+    state.calendarDate = new Date(
+      state.calendarDate.getFullYear(),
+      state.calendarDate.getMonth() - 1,
+      1,
+    );
     renderCalendar();
   });
 
   $("#nextMonth").addEventListener("click", () => {
-    state.calendarDate = new Date(state.calendarDate.getFullYear(), state.calendarDate.getMonth() + 1, 1);
+    state.calendarDate = new Date(
+      state.calendarDate.getFullYear(),
+      state.calendarDate.getMonth() + 1,
+      1,
+    );
     renderCalendar();
   });
 
@@ -1567,7 +1826,6 @@ function bindEvents() {
     state.calendarDate = new Date(year, month - 1, 1);
     renderCalendar();
   });
-
 }
 
 function selectLatestVisit() {
@@ -1579,7 +1837,11 @@ function selectLatestVisit() {
   })[0];
   const latestDate = new Date(latest.arrivalAt || latest.plannedAt);
   state.selectedDate = dateKey(latestDate);
-  state.calendarDate = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1);
+  state.calendarDate = new Date(
+    latestDate.getFullYear(),
+    latestDate.getMonth(),
+    1,
+  );
 }
 
 function init() {
@@ -1587,7 +1849,6 @@ function init() {
   bindEvents();
   renderActiveVisit();
   renderCalendar();
-  updateStatus();
   initializeAuth();
 }
 

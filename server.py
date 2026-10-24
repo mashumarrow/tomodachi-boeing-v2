@@ -12,7 +12,8 @@ from urllib.error import URLError
 import jwt
 from user_records import (auth_config, authenticated_subject, list_records, save_record,
                           get_profile, save_profile, UNIVERSITY_DATA, MIYAZAKI_UNIVERSITY_ID,
-                          list_reviews, unpublish_review)
+                          list_reviews, unpublish_review, verify_university_email, validate_record,
+                          hospital_stay_averages, hospital_fee_averages)
 from university_locations import resolve_university_location
 
 
@@ -68,9 +69,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json({"reviews": list_reviews(subject, hospital_id)})
             return
         if parsed.path == "/api/facilities":
-            if not self.require_member():
+            subject = self.require_member()
+            if not subject:
                 return
-            self.handle_facilities(parse_qs(parsed.query))
+            self.handle_facilities(parse_qs(parsed.query), subject)
             return
         if parsed.path == "/api/university-origin":
             subject = self.require_member()
@@ -80,20 +82,20 @@ class AppHandler(SimpleHTTPRequestHandler):
                 location = resolve_university_location(get_profile(subject)["universityId"])
                 self.send_json({"origin": location})
             except (ValueError, URLError, TimeoutError, KeyError, TypeError):
-                self.send_json({"error": "大学の所在地を取得できませんでした。「現在地を使う」で検索してください。"}, 503)
+                self.send_json({"error": "大学の所在地を取得できませんでした。時間をおいて再度検索してください。"}, 503)
             return
         if parsed.path in {"/api/profile", "/api/universities"}:
             subject = self.require_user()
             if subject:
                 self.send_json({"profile": get_profile(subject)} if parsed.path == "/api/profile" else UNIVERSITY_DATA)
             return
-        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/data/facilities.js"}:
+        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg"}:
             self.send_json({"error": "Not found"}, 404)
             return
         super().do_GET()
 
     def do_HEAD(self):
-        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/data/facilities.js"}:
+        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg"}:
             self.send_error(404)
             return
         super().do_HEAD()
@@ -136,6 +138,17 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/email-verification":
+            subject = self.require_member()
+            if not subject:
+                return
+            try:
+                verified = verify_university_email(subject, self.headers.get("Authorization", ""))
+            except (URLError, TimeoutError, ValueError):
+                self.send_json({"error": "大学メールの認証状態を確認できませんでした。再ログインしてから試してください。"}, 503)
+                return
+            self.send_json({"universityEmailVerified": verified})
+            return
         if path not in {"/api/visits", "/api/profile"}:
             self.send_json({"error": "Not found"}, 404)
             return
@@ -147,7 +160,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not 0 < length <= 16384:
                 raise ValueError("記録のサイズが正しくありません。")
             payload = json.loads(self.rfile.read(length))
-            record = save_profile(subject, payload) if path == "/api/profile" else save_record(subject, payload)
+            if path == "/api/profile":
+                record = save_profile(subject, payload)
+            else:
+                payload = validate_record(payload)
+                verified = False
+                if payload["reviewSharing"]["published"] and payload["reviewVersion"] == 2:
+                    try:
+                        verified = verify_university_email(subject, self.headers.get("Authorization", ""))
+                    except (URLError, TimeoutError, ValueError):
+                        self.log_error("University email verification unavailable; no badge issued")
+                record = save_record(subject, payload, university_email_verified=verified)
         except (ValueError, UnicodeDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
             return
@@ -169,7 +192,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         self.send_json({"visit": record})
 
-    def handle_facilities(self, query):
+    def handle_facilities(self, query, subject):
         try:
             latitude = float(query["latitude"][0])
             longitude = float(query["longitude"][0])
@@ -204,6 +227,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             FROM facilities f
             WHERE f.latitude BETWEEN ? AND ?
               AND f.longitude BETWEEN ? AND ?
+              AND f.address LIKE '宮崎県%'
               AND f.type IN ('hospital', 'clinic')
               AND EXISTS (
                   SELECT 1 FROM facility_departments fd
@@ -244,7 +268,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 "phone": "掲載なし",
             })
         results.sort(key=lambda item: item["distanceKm"])
-        self.send_json({"facilities": results[:limit], "total": len(results)})
+        visible_results = results[:limit]
+        hospital_ids = [facility["id"] for facility in visible_results]
+        averages = hospital_stay_averages(subject, hospital_ids)
+        fee_averages = hospital_fee_averages(subject, hospital_ids)
+        for facility in visible_results:
+            facility.update(averages.get(facility["id"], {"averageStayMinutes": None, "staySampleCount": 0}))
+            facility.update(fee_averages.get(facility["id"], {"averageFeeAmount": None, "feeSampleCount": 0}))
+        self.send_json({"facilities": visible_results, "total": len(results)})
 
     def send_json(self, value, status=200):
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")

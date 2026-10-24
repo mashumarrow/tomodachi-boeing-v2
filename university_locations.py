@@ -55,10 +55,10 @@ def lookup_address(university):
     with urlopen(request, timeout=12) as response:
         results = json.load(response)
     if not results:
-        raise ValueError("大学の所在地を取得できませんでした。「現在地を使う」で検索してください。")
+        raise ValueError("大学の所在地を取得できませんでした。時間をおいて再度検索してください。")
     longitude, latitude = results[0]["geometry"]["coordinates"][:2]
     if not (math.isfinite(latitude) and math.isfinite(longitude)
             and 20 <= latitude <= 46 and 122 <= longitude <= 154):
-        raise ValueError("大学の所在地が不正です。「現在地を使う」で検索してください。")
+        raise ValueError("大学の所在地が不正です。登録大学の所在地を確認してください。")
     return {"label": university["name"], "latitude": latitude, "longitude": longitude,
             "address": university["address"], "matchedAddress": results[0]["properties"]["title"], "source": "gsi"}
