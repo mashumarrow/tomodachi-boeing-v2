@@ -136,6 +136,11 @@ main {
 .account-identity { display: grid; gap: 5px; padding: 12px; overflow-wrap: anywhere; }
 .account-identity strong { font-size: 15px; line-height: 1.5; }
 .account-identity span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.account-email-status { padding: 0 12px 12px; }
+.account-email-status:has(p:empty):has([hidden]) { display: none; }
+.account-email-status .review-verified { margin-top: 0; }
+.account-email-status .review-verified[hidden] { display: none; }
+.account-email-status p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .account-logout { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border: 0; border-top: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font-size: 14px; text-align: left; }
 .account-logout:hover { background: #f0f5fc; }
 .account-logout img { flex: 0 0 20px; }
@@ -417,22 +422,20 @@ body:has(#loginScreen:not([hidden])) .access-status {
 }
 
 .profile-body h1 { font-size: 24px; }
+.profile-campus { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; text-align: center; }
 
 .profile-form { display: grid; gap: 24px; margin: 28px 0 8px; }
 .profile-submit { display: grid; gap: 10px; }
 .profile-feedback { margin: 0; color: #b33a38; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .profile-feedback:empty { display: none; }
 .profile-settings-fields { display: grid; gap: 18px; }
-.profile-settings-fields > label,
-.profile-form .university-picker > label {
+.profile-settings-fields > label {
   display: grid;
   gap: 8px;
   color: #354052;
   font-size: 13px;
   font-weight: 600;
 }
-.profile-form .university-picker > label { display: flex; align-items: center; }
-.field-required { color: #8993a1; font-size: 10px; font-weight: 400; }
 .profile-form .du-input,
 .profile-form .du-select {
   width: 100%;
@@ -460,7 +463,6 @@ body:has(#loginScreen:not([hidden])) .access-status {
   box-shadow: none;
 }
 .access-screen .profile-signout.du-btn:hover { background: #f3f5f8; color: #354052; }
-.university-selection:empty { display: none; }
 
 @media (max-width: 359px) {
   .access-screen { padding-right: 20px; padding-left: 20px; }
@@ -468,32 +470,6 @@ body:has(#loginScreen:not([hidden])) .access-status {
   #loginTitle { font-size: 36px; }
   .profile-body h1 { font-size: 23px; }
 }
-
-.university-suggestions {
-  display: grid;
-  max-height: 260px;
-  overflow-y: auto;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
-}
-
-.university-suggestions[hidden] { display: none; }
-.university-suggestions button {
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
-  background: #fff;
-  text-align: left;
-  overflow-wrap: anywhere;
-}
-.university-suggestions button:hover,
-.university-suggestions button[aria-selected="true"] { background: #eaf3ff; }
-.university-selection { color: var(--muted); font-size: 12px; }
-.university-picker { display: grid; gap: 8px; }
-.university-suggestions > span { padding: 12px; font-size: 13px; color: var(--muted); }
 
 .results-list[hidden],
 .map-view[hidden] {
@@ -882,9 +858,6 @@ body:has(#loginScreen:not([hidden])) .access-status {
   display: grid;
   gap: 12px;
   margin-top: 14px;
-  padding: 14px;
-  border-left: 3px solid var(--teal);
-  background: #f8fafc;
 }
 
 .form-error {
@@ -1228,7 +1201,7 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .community-card-header {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 10px;
 }
 
@@ -1313,10 +1286,6 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .manual-duration output { color: var(--ink); font-size: 20px; font-weight: 700; }
 .review-publication { border-top: 1px solid var(--line); padding-top: 18px; }
 .review-publication-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
-.review-time-consent { margin-top: 12px; padding-left: 12px; border-left: 2px solid #dce5f2; }
-.review-time-consent .review-check { align-items: flex-start; line-height: 1.7; }
-.review-time-consent input { margin-top: 2px; }
-.review-time-consent p { margin: 6px 0 0; color: #6b5860; font-size: 12px; line-height: 1.7; }
 .review-check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 13px; }
 .review-check input { width: 20px; min-height: 20px; height: 20px; margin: 0; padding: 0; flex: 0 0 20px; accent-color: var(--blue); }
 .review-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: #eaf5f3; color: #167366; font-size: 15px; font-weight: 700; line-height: 1; }
@@ -1335,7 +1304,6 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .community-card .review-note:last-child { margin-bottom: 0; }
 .record-sharing { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
 .record-sharing > span { color: var(--muted); font-size: 11px; }
-.record-sharing button { font-size: 12px; }
 
 .review-step { min-width: 0; margin: 0; padding: 20px 0 0; border: 0; border-top: 1px solid var(--line); }
 .review-step legend { max-width: 100%; padding: 0 0 8px; color: var(--ink); font-size: 15px; font-weight: 700; line-height: 1.7; }
@@ -1347,6 +1315,10 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .review-positive-points .review-check { padding: 8px 0; border-bottom: 1px solid #edf0f5; line-height: 1.7; }
 .review-positive-points .review-check:last-child { border-bottom: 0; }
 .review-verified { display: inline-block; max-width: 100%; margin-top: 12px; padding: 4px 7px; border-radius: 4px; color: #126b4a; background: #edf8f2; font-size: 10px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.review-header-meta { display: grid; justify-items: end; align-content: center; gap: 6px; }
+.review-university-badge { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; margin-top: 0; padding: 3px 6px; border: 1px solid #dcebe3; background: #f5faf7; white-space: nowrap; }
+.review-university-badge img { display: block; flex: 0 0 24px; width: 24px; height: 24px; object-fit: contain; }
+.review-verification-label { font-size: 11px; }
 .review-month { display: grid; gap: 3px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; text-align: right; }
 .review-month time { color: #536176; white-space: nowrap; }
 .review-visit-times { margin-top: 14px; color: #435167; font-size: 12px; line-height: 1.7; }

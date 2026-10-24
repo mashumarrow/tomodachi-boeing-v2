@@ -107,10 +107,9 @@ def check_auth_redirect(browser, url):
             assert page.evaluate("window.callbackChecks || 0") == 0
         elif scenario == "nickname_missing":
             page.locator("#profileScreen").wait_for(state="visible")
-            page.wait_for_function("document.querySelector('#universitySelect').value === 'F145110111523'")
+            assert page.locator("#universitySelect, #universitySearch").count() == 0
             assert page.locator("#appContent").is_hidden()
             assert page.locator("#profileNickname").input_value() == ""
-            assert page.locator("#universitySearch").input_value() == "宮崎大学"
             assert page.locator("#profileGrade").input_value() == "4"
             assert page.locator("#profileGender").input_value() == "prefer_not_to_say"
         else:
@@ -220,7 +219,7 @@ def check_review_layout(browser, url):
         context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(
             body=SDK, content_type="application/javascript"))
         context.route("**/api/profile", lambda route: route.fulfill(
-            body=json.dumps({"profile": {"nickname": "ひなた", "universityName": "宮崎大学"}}), content_type="application/json"))
+            body=json.dumps({"profile": {"nickname": "ひなた", "universityName": "宮崎大学", "universityId": user_records.MIYAZAKI_UNIVERSITY_ID}}), content_type="application/json"))
         context.route("**/api/visits", lambda route: route.fulfill(
             body='{"visits":[]}', content_type="application/json"))
         page = context.new_page()
@@ -261,6 +260,31 @@ def check_review_layout(browser, url):
         assert cards.nth(3).locator(".review-body").count() == 0
         assert cards.nth(4).locator(".review-month").count() == 0
         assert cards.nth(4).locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 11:00", "12:00"]
+        badge = cards.nth(0).locator(".community-card-header .review-verified")
+        assert badge.get_attribute("aria-label") == "宮崎大学メール認証済み"
+        assert badge.inner_text() == "認証済み"
+        badge.locator("img").evaluate("image => image.decode()")
+        assert badge.locator("img").evaluate("image => image.naturalWidth > 0 && image.naturalHeight > 0")
+        assert "大学による公式認定ではありません" in badge.get_attribute("title")
+        assert cards.nth(1).locator(".review-verified").count() == 0
+        assert cards.nth(0).locator(".community-card-header").evaluate("""header => {
+            const author = header.querySelector('.review-author').getBoundingClientRect();
+            const badge = header.querySelector('.review-verified').getBoundingClientRect();
+            const bounds = header.getBoundingClientRect();
+            return author.right <= badge.left && Math.abs(badge.right - bounds.right) <= 1
+                && Math.abs((author.top + author.bottom) / 2 - (bounds.top + bounds.bottom) / 2) <= 1;
+        }""")
+        for verified, university, expected in (
+            (True, "miyazaki", "宮崎大学メール認証済み"),
+            (True, "doshisha", "同志社大学メール認証済み"),
+            (False, "doshisha", ""), (True, "unknown", ""), (True, "constructor", ""),
+        ):
+            badge = page.evaluate("""post => {
+                const element = document.createElement('div');
+                element.innerHTML = reviewContentMarkup(post);
+                return element.querySelector('.review-verified')?.getAttribute('aria-label') || '';
+            }""", {"universityEmailVerified": verified, "verifiedEmailUniversity": university})
+            assert badge == expected
         assert "2026年10月22日 00:30" in page.evaluate("reviewVisitTimesMarkup({arrivalAt: '2026-10-21T14:30:00Z', leaveAt: '2026-10-21T15:30:00Z'})")
         assert page.evaluate("reviewVisitTimesMarkup({arrivalAt: 'invalid', leaveAt: 'invalid'})") == ""
         assert page.evaluate("reviewVisitTimesMarkup({arrivalAt: '2026-10-22T00:00:00Z', leaveAt: '2026-10-21T00:00:00Z'})") == ""
@@ -273,6 +297,156 @@ def check_review_layout(browser, url):
         assert errors == [], errors
         context.close()
     print("Review layout checks passed for long names, long text, missing fields, zero values and legacy notes")
+
+
+def check_fixed_university_registration(browser, url):
+    for width in (320, 375, 1280):
+        legacy = {"universityId": "F126310107564", "universityName": "同志社大学",
+                  "grade": "4", "gender": "prefer_not_to_say", "nickname": "テスト"}
+        with user_records.connect_records() as connection:
+            connection.execute("INSERT INTO profiles VALUES (?, ?)", ("test-user", json.dumps(legacy)))
+        context = browser.new_context(viewport={"width": width, "height": 820}, timezone_id="Asia/Tokyo")
+        context.route("https://unpkg.com/**", lambda route: route.abort())
+        context.route("https://routing.openstreetmap.de/**", lambda route: route.abort())
+        context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(body=SDK, content_type="application/javascript"))
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script("window.testLoggedIn = true;")
+        page.goto(url)
+        page.locator("#profileScreen").wait_for(state="visible")
+        assert page.locator("#appContent").is_hidden()
+        assert page.locator("#universitySearch, #universitySelect").count() == 0
+        assert page.locator("#profileNickname").input_value() == "テスト"
+        assert page.locator("#profileGrade").input_value() == "4"
+        assert user_records.get_profile("test-user")["universityId"] == "F126310107564"
+        page.click('#profileForm button[type="submit"]')
+        page.locator("#appContent").wait_for(state="visible")
+        assert "宮崎大学" in page.locator("#searchOrigin").inner_text()
+        assert page.locator("#profileSummary").text_content() == "宮崎大学"
+        search_at_nine(page)
+        page.locator(".hospital-card").first.wait_for()
+        assert "宮崎大学" in page.locator("#searchSummary").inner_text()
+        assert page.locator("#accountStatus").text_content() == ""
+        addresses = page.locator(".hospital-card .result-details > div:first-child dd").all_text_contents()
+        assert addresses and all(address.startswith("宮崎県") for address in addresses)
+        hospital_id = page.locator('.hospital-card [data-detail]').first.get_attribute("data-detail")
+        page.locator('.hospital-card [data-detail]').first.click()
+        page.locator("#screen-detail.active").wait_for()
+        page.locator('#detail [data-plan]').click()
+        page.fill("#manualArrivalAt", "2026-10-21T10:00")
+        page.fill("#manualLeaveAt", "2026-10-21T10:45")
+        page.fill("#feeAmount", "1200")
+        page.select_option("#visitType", "初診")
+        page.select_option("#reservationStatus", "予約あり")
+        page.check('[data-positive-point][value="質問しやすい"]')
+        page.fill("#sceneText", "動作確認用の口コミ")
+        assert page.locator(".review-publication").is_visible()
+        with patch("server.verified_email_university", return_value="doshisha"):
+            page.click('#completionForm button[type="submit"]')
+            page.locator("#screen-log.active").wait_for()
+        record = user_records.list_records("test-user")[0]
+        assert record["reviewSharing"]["published"] is True and record["stayMinutes"] == 45
+        page.click('.tab[data-nav="search"]')
+        search_at_nine(page)
+        card = assert_hospital_estimate(page, hospital_id, 45)
+        card.locator('[data-detail]').click()
+        review = page.locator(".community-card").filter(has_text="自分の口コミ・公開中")
+        review.wait_for()
+        assert review.locator(".review-verified").get_attribute("aria-label") == "同志社大学メール認証済み"
+        assert review.locator(".review-verified").inner_text() == "認証済み"
+        badge_image = review.locator(".review-verified img")
+        assert badge_image.get_attribute("src") == "assets/universities/miyazaki-symbol.png"
+        badge_image.evaluate("image => image.decode()")
+        assert badge_image.evaluate("image => image.naturalWidth > 0")
+        assert review.locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 10:00", "10:45"]
+        assert user_records.get_profile("test-user")["universityId"] == user_records.MIYAZAKI_UNIVERSITY_ID
+        assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+        review.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-doshisha-review-{width}.png"))
+        assert errors == [], errors
+        context.close()
+        with user_records.connect_records() as connection:
+            for table in ("profiles", "visits", "reviews"):
+                connection.execute(f"DELETE FROM {table} WHERE user_id = ?", ("test-user",))
+    print("Fixed Miyazaki registration checks passed: legacy profile, search origin, results, publication and email badge")
+
+
+def check_email_badge_sync(browser, url):
+    for status_name, university in (("verified", "miyazaki"), ("verified", "doshisha"),
+                                    ("email_unverified", None), ("unsupported_domain", None),
+                                    ("missing_email", None), ("unavailable", None)):
+        user_records.save_profile("test-user", {"grade": "4", "gender": "prefer_not_to_say", "nickname": "ひなた"})
+        user_records.save_record("test-user", {
+            "id": "badge-sync", "hospitalId": "clinic:1", "hospitalName": "テスト病院", "department": "internal",
+            "plannedAt": "2026-10-21T00:00:00Z", "arrivalAt": "2026-10-21T01:00:00Z", "leaveAt": "2026-10-21T01:30:00Z",
+            "feeAmount": "1200", "reservationStatus": "予約あり", "waitingImpression": "未入力", "reviewVersion": 2,
+            "visitType": "初診", "positivePoints": ["質問しやすい"], "sceneText": "メール認証前に投稿した口コミ",
+            "reviewSharing": {"published": True},
+        })
+        context = browser.new_context(viewport={"width": 375, "height": 820})
+        context.route("https://unpkg.com/**", lambda route: route.abort())
+        context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(body=SDK, content_type="application/javascript"))
+        if status_name == "unavailable":
+            context.route("**/api/email-verification", lambda route: route.fulfill(status=503,
+                body='{"error":"Verification unavailable"}', content_type="application/json"))
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script("window.testLoggedIn = true;")
+        result = {"status": status_name, "universityEmailVerified": status_name == "verified", "verifiedEmailUniversity": university}
+        with patch("server.email_verification_status", return_value=result):
+            page.goto(url)
+            page.locator("#appContent").wait_for(state="visible")
+            page.wait_for_function("state.emailVerification && state.emailVerification.status !== 'checking'")
+            page.click("#accountButton")
+            if university:
+                label = "宮崎大学メール認証済み" if university == "miyazaki" else "同志社大学メール認証済み"
+                assert page.locator("#accountEmailBadge").inner_text() == label
+                assert page.locator("#accountEmailBadge").is_visible()
+                assert user_records.list_reviews("test-user", "clinic:1")[0]["universityEmailVerified"] is True
+                page.click(".topbar h1")
+                page.evaluate("""async () => {
+                    state.selectedHospital = {id: 'clinic:1'};
+                    document.querySelector('#detail').innerHTML = '<span id="reviewCount"></span><div id="hospitalReviews" class="community-feed"></div>';
+                    navigate('detail'); await loadHospitalReviews(state.selectedHospital);
+                }""")
+                assert page.locator("#hospitalReviews .review-verified").get_attribute("aria-label") == label
+            else:
+                assert page.locator("#accountEmailBadge").is_hidden()
+                messages = {"email_unverified": "メールアドレスが未確認", "unsupported_domain": "対象外",
+                            "missing_email": "メール情報を取得できません", "unavailable": "確認に失敗"}
+                assert messages[status_name] in page.locator("#accountEmailStatus").inner_text()
+                assert not user_records.list_reviews("test-user", "clinic:1")[0]["universityEmailVerified"]
+            assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+            page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-email-{status_name}-{university or 'none'}.png"))
+            assert errors == [], errors
+        context.close()
+        with user_records.connect_records() as connection:
+            for table in ("profiles", "visits", "reviews"):
+                connection.execute(f"DELETE FROM {table} WHERE user_id = ?", ("test-user",))
+    user_records.save_profile("test-user", {"grade": "4", "gender": "prefer_not_to_say", "nickname": "ひなた"})
+    context = browser.new_context(viewport={"width": 320, "height": 820})
+    context.route("https://unpkg.com/**", lambda route: route.abort())
+    context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(body=SDK, content_type="application/javascript"))
+    pending = []
+    context.route("**/api/email-verification", lambda route: pending.append(route))
+    page = context.new_page()
+    page.add_init_script("window.testLoggedIn = true;")
+    page.goto(url)
+    page.locator("#appContent").wait_for(state="visible")
+    page.click("#accountButton")
+    page.click("#logoutButton")
+    page.locator("#loginScreen").wait_for(state="visible")
+    assert pending
+    pending[0].fulfill(body=json.dumps({"universityEmailVerified": True, "verifiedEmailUniversity": "doshisha",
+                                       "status": "verified", "updatedReviews": 1}), content_type="application/json")
+    page.wait_for_timeout(100)
+    assert page.locator("#accountEmailBadge").text_content() == ""
+    assert page.evaluate("state.emailVerification") is None
+    context.close()
+    with user_records.connect_records() as connection:
+        connection.execute("DELETE FROM profiles WHERE user_id = ?", ("test-user",))
+    print("Email badge checks passed: Miyazaki, Doshisha, old posts, failure reasons, outage and late logout response")
 
 
 def check_manual_time_entry(browser, url):
@@ -305,6 +479,13 @@ def check_manual_time_entry(browser, url):
                 status: 'planned', feeAmount: '', reservationStatus: '未入力', waitingImpression: '未入力'};
             navigate('active'); renderActiveVisit();
         }""")
+        assert "status =" not in page.locator("#screen-active").inner_text()
+        assert "Web版MVP" not in page.locator("#screen-active").inner_text()
+        assert page.locator('#manualTimeForm button').count() == 0
+        assert page.locator("#manualLeaveAt").evaluate("input => input.required")
+        assert page.locator("#manualTimeForm").evaluate("element => getComputedStyle(element).backgroundColor") == "rgba(0, 0, 0, 0)"
+        assert "任意" not in page.locator("#manualTimeForm").inner_text()
+        assert "必須" not in page.locator("#manualTimeForm").inner_text()
         page.fill("#manualArrivalAt", "2026-10-21T23:45")
         assert page.locator("#completionForm").count() == 0
         assert page.locator("#leaveButton").is_enabled()
@@ -317,7 +498,7 @@ def check_manual_time_entry(browser, url):
         page.fill("#sceneText", "時刻を変更してもこの文章を残す")
         page.fill("#manualLeaveAt", "2026-10-22T00:30")
         assert page.locator("#manualStayMinutes").inner_text() == "45分"
-        page.click('#manualTimeForm button[type="submit"]')
+        page.locator("#activeVisit").screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-active-times-{width}.png"))
         assert page.locator("#feeAmount").input_value() == "0"
         assert page.locator("#sceneText").input_value() == "時刻を変更してもこの文章を残す"
         page.fill("#manualLeaveAt", "2026-10-21T23:00")
@@ -327,6 +508,9 @@ def check_manual_time_entry(browser, url):
         assert saved == []
         page.fill("#manualLeaveAt", "")
         assert page.locator("#completionForm").count() == 0
+        assert not page.evaluate("synchronizeManualTimes(true)")
+        assert "受診終了日時を入力" in page.locator("#manualTimeError").inner_text()
+        assert saved == []
         page.fill("#manualLeaveAt", "2026-10-22T00:15")
         assert page.locator("#feeAmount").input_value() == "0"
         assert page.locator("#sceneText").input_value() == "時刻を変更してもこの文章を残す"
@@ -377,13 +561,6 @@ def check_profile_submission(browser, url):
     assert status.inner_text() == "ニックネームを入力してください。"
     page.fill("#profileNickname", "ひなた")
     submit.click()
-    assert status.inner_text() == "候補から大学を選択してください。"
-    page.fill("#universitySearch", "宮崎大学")
-    submit.click()
-    assert status.inner_text() == "候補から大学を選択してください。"
-    page.click("#universitySearch")
-    page.get_by_role("option", name="宮崎大学（宮崎）", exact=True).click()
-    submit.click()
     assert status.inner_text() == "学年を選択してください。"
     page.select_option("#profileGrade", "4")
     submit.click()
@@ -409,6 +586,8 @@ def check_profile_submission(browser, url):
     assert len(pending_requests) == 2
     profile = pending_requests[-1].request.post_data_json
     assert profile["nickname"] == "ひなた"
+    assert "universityId" not in profile and "universityName" not in profile
+    profile["universityId"] = user_records.MIYAZAKI_UNIVERSITY_ID
     profile["universityName"] = "宮崎大学"
     old_profile = {key: value for key, value in profile.items() if key != "nickname"}
     pending_requests[-1].fulfill(content_type="application/json", body=json.dumps({"profile": old_profile}))
@@ -432,7 +611,10 @@ def main():
     ), patch("server.authenticated_subject", return_value="test-user"), patch(
         "server.auth_config", return_value={"configured": True, "domain": "test.auth0.com",
                                             "clientId": "test-client", "audience": "test-api"}
-    ), patch("server.verify_university_email", return_value=True):
+    ), patch("server.verified_email_university", return_value="miyazaki"), patch(
+        "server.email_verification_status", return_value={"universityEmailVerified": True,
+        "verifiedEmailUniversity": "miyazaki", "status": "verified"}
+    ):
         app = ThreadingHTTPServer(("127.0.0.1", 0), server.AppHandler)
         thread = threading.Thread(target=app.serve_forever, daemon=True)
         thread.start()
@@ -510,17 +692,8 @@ def main():
                     assert page.evaluate("window.tokenRefreshes") == 1
                     assert page.locator("#appContent").is_hidden()
                     page.fill("#profileNickname", "ひなた")
-                    page.fill("#universitySearch", "宮崎大学")
-                    option = page.get_by_role("option", name="宮崎大学（宮崎）", exact=True)
-                    option.wait_for()
-                    page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-universities-{width}.png"))
-                    page.press("#universitySearch", "ArrowDown")
-                    page.press("#universitySearch", "Enter")
-                    assert page.locator("#universitySelect").input_value() == "F145110111523"
-                    page.fill("#universitySearch", "同志社")
-                    assert page.locator("#universitySelect").input_value() == ""
-                    page.fill("#universitySearch", "宮崎大学")
-                    page.get_by_role("option", name="宮崎大学（宮崎）", exact=True).click()
+                    assert page.locator("#universitySearch, #universitySelect, #universitySuggestions").count() == 0
+                    assert page.locator(".profile-campus").inner_text() == "宮崎大学生専用"
                     page.select_option("#profileGrade", "4")
                     page.select_option("#profileGender", "prefer_not_to_say")
                     profile_bounds = page.locator("#profileScreen .access-body").bounding_box()
@@ -623,10 +796,13 @@ def main():
                     first_review = user_records.list_reviews("test-user", hospital_id)[0]
                     assert first_review["note"] == "" and first_review["sceneText"] == note
                     assert first_review["stayMinutes"] == 30
-                    assert "arrivalAt" not in first_review and "leaveAt" not in first_review
+                    assert first_review["arrivalAt"] == user_records.list_records("test-user")[0]["arrivalAt"]
+                    assert first_review["leaveAt"] == user_records.list_records("test-user")[0]["leaveAt"]
                     assert user_records.list_records("test-user")[0]["reviewSharing"]["published"] is True
-                    page.locator("#monthDetails [data-unpublish]").click()
-                    page.wait_for_function("!document.querySelector('#monthDetails [data-unpublish]')")
+                    assert page.locator("#monthDetails [data-unpublish]").count() == 0
+                    assert "口コミを公開中" in page.locator("#monthDetails").inner_text()
+                    # Seed a historical private record; the UI no longer offers withdrawal.
+                    user_records.unpublish_review("test-user", user_records.list_records("test-user")[0]["id"])
                     assert user_records.list_reviews("test-user", hospital_id) == []
                     page.reload()
                     page.locator("#appContent").wait_for(state="visible")
@@ -661,16 +837,15 @@ def main():
                         "note": "", "reviewVersion": 2, "nickname": "こもれび", "visitType": "再診", "waitingMinutes": 10,
                         "positivePoints": ["特になし・分からない"], "sceneText": "授業の前に受診できました。", "adviceText": "",
                         "reviewSharing": {"published": True},
-                    })
+                    }, verified_email_university="doshisha")
                     page.locator('#detail [data-plan]').click()
                     page.click("#arrivalButton")
                     page.click("#leaveButton")
                     page.fill("#manualArrivalAt", "2026-10-21T11:00")
                     page.fill("#manualLeaveAt", "2026-10-21T12:00")
-                    page.click('#manualTimeForm button[type="submit"]')
                     assert page.locator("#publishReview").count() == 0
-                    assert not page.locator("#shareVisitTimes").is_checked()
-                    assert page.locator(".review-time-consent").is_visible()
+                    assert page.locator("#shareVisitTimes, .review-time-consent").count() == 0
+                    assert "受診日時（月日・到着〜終了時刻）と一緒に" in page.locator(".review-publication-note").inner_text()
                     page.fill("#feeAmount", "2000")
                     page.select_option("#visitType", "初診")
                     page.select_option("#reservationStatus", "予約なし")
@@ -687,33 +862,34 @@ def main():
                     page.fill("#sceneText", "薬の使い方を紙に書いて説明してくれた。")
                     page.fill("#adviceText", "支払いは現金だった。会計は少し待ちました。")
                     assert page.locator("#publishReview").count() == 0
-                    assert page.locator(".review-time-consent").is_visible()
-                    assert not page.locator("#shareVisitTimes").is_checked()
-                    page.check("#shareVisitTimes")
+                    assert page.locator("#shareVisitTimes, .review-time-consent").count() == 0
                     assert page.locator("#reviewNickname, #verifyUniversityEmail, [data-review-field], #reviewPreview").count() == 0
                     assert page.locator("#accountNickname").text_content() == "ひなた"
                     assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
                     page.locator('.review-publication').scroll_into_view_if_needed()
                     page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-review-form-{width}.png"))
-                    # Preserve the privacy choice on drafts created before the simplified form.
+                    # Preserve the older fee choice, while always publishing visit times.
                     page.evaluate("""() => {
                         const key = 'campusClinicActiveVisit:test-user';
                         const draft = JSON.parse(localStorage.getItem(key));
                         draft.reviewSharing.showFee = false;
+                        draft.reviewSharing.showVisitTimes = false;
                         localStorage.setItem(key, JSON.stringify(draft));
                     }""")
                     page.reload()
                     page.locator("#appContent").wait_for(state="visible")
                     page.click('.tab[data-nav="active"]')
                     assert page.locator("#publishReview").count() == 0
-                    assert page.locator("#shareVisitTimes").is_checked()
+                    assert page.locator("#shareVisitTimes").count() == 0
+                    assert page.evaluate("state.activeVisit.reviewSharing.showVisitTimes") is True
                     assert page.locator("#reviewNickname, #verifyUniversityEmail, [data-review-field], #reviewPreview").count() == 0
                     assert page.locator("#feeAmount").input_value() == "2000"
                     assert page.locator('[data-positive-point][value="その他"]').is_checked()
                     assert page.locator("#adviceText").input_value() == "支払いは現金だった。会計は少し待ちました。"
                     page.click('#completionForm button[type="submit"]')
                     page.locator("#screen-log.active").wait_for()
-                    assert page.locator("#monthDetails [data-unpublish]").count() == 1
+                    assert page.locator("#monthDetails [data-unpublish]").count() == 0
+                    assert "口コミを公開中" in page.locator("#monthDetails").inner_text()
                     page.click('.tab[data-nav="search"]')
                     search_at_nine(page)
                     average_card = assert_hospital_estimate(page, hospital_id, 39)
@@ -729,7 +905,7 @@ def main():
                     assert "学部4年" in own_review.inner_text()
                     assert "ひなた" in own_review.inner_text()
                     assert "初診" in own_review.inner_text()
-                    assert "宮崎大学メール認証済み" in own_review.inner_text()
+                    assert own_review.locator(".review-verified").get_attribute("aria-label") == "宮崎大学メール認証済み"
                     assert "次に行く学生へ" in own_review.inner_text()
                     assert "会計は少し待ちました。" in own_review.inner_text()
                     assert "その他" in own_review.locator(".review-point-list").inner_text()
@@ -744,16 +920,17 @@ def main():
                     other_review = page.locator(".community-card").filter(has_text="宮大生の口コミ")
                     assert "学部2年" in other_review.inner_text()
                     assert "1,200" in other_review.inner_text()
-                    assert "2026年10月" in other_review.inner_text()
-                    assert other_review.locator(".review-month").inner_text() == "2026年10月"
-                    assert other_review.locator(".review-visit-times").count() == 0
+                    assert other_review.locator(".review-month").count() == 0
+                    assert other_review.locator(".review-visit-times time").all_text_contents() == ["2026年10月17日 09:10", "09:35"]
                     assert "こもれび" in other_review.inner_text()
-                    assert other_review.locator(".review-verified").count() == 0
+                    assert other_review.locator(".review-verified").get_attribute("aria-label") == "同志社大学メール認証済み"
                     other_review.scroll_into_view_if_needed()
                     page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-reviews-{width}.png"))
                     page.click('.tab[data-nav="log"]')
-                    page.locator("#monthDetails [data-unpublish]").click()
-                    page.wait_for_function("!document.querySelector('#monthDetails [data-unpublish]')")
+                    assert page.locator("#monthDetails [data-unpublish]").count() == 0
+                    own_record = next(record for record in user_records.list_records("test-user")
+                                      if record["reviewSharing"]["published"])
+                    user_records.unpublish_review("test-user", own_record["id"])
                     reviews = user_records.list_reviews("test-user", hospital_id)
                     assert len(reviews) == 1 and not reviews[0]["isOwnRecord"]
                     assert len(user_records.list_records("test-user")) == 2
@@ -799,6 +976,8 @@ def main():
                 check_account_logout(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_review_layout(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_manual_time_entry(browser, f"http://127.0.0.1:{app.server_port}/")
+                check_fixed_university_registration(browser, f"http://127.0.0.1:{app.server_port}/")
+                check_email_badge_sync(browser, f"http://127.0.0.1:{app.server_port}/")
                 browser.close()
                 print("Onboarding checks passed at 320px, 375px and 1280px")
                 print(f"Screenshots: {tempfile.gettempdir()}/clinic-profile-375.png")

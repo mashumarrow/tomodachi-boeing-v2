@@ -88,7 +88,7 @@ class UserRecordTests(unittest.TestCase):
         self.assertEqual(user_records.hospital_stay_averages("user-b", ["clinic:1"]), {
             "clinic:1": {"averageStayMinutes": 65, "staySampleCount": 3}})
         other_school = next(code for code in user_records.UNIVERSITIES if code != user_records.MIYAZAKI_UNIVERSITY_ID)
-        user_records.save_profile("user-a", {"universityId": other_school, "grade": "4",
+        self.legacy_profile("user-a", {"universityId": other_school, "grade": "4",
                                              "gender": "female", "nickname": "ひなた"})
         self.assertEqual(user_records.hospital_stay_averages("user-c", ["clinic:1"]), {
             "clinic:1": {"averageStayMinutes": 135, "staySampleCount": 1}})
@@ -147,7 +147,7 @@ class UserRecordTests(unittest.TestCase):
         self.assertEqual(user_records.hospital_fee_averages("user-a", ["clinic:1"]), {
             "clinic:1": {"averageFeeAmount": 1500, "feeSampleCount": 1}})
         other_school = next(code for code in user_records.UNIVERSITIES if code != user_records.MIYAZAKI_UNIVERSITY_ID)
-        user_records.save_profile("user-a", {"universityId": other_school, "grade": "4",
+        self.legacy_profile("user-a", {"universityId": other_school, "grade": "4",
                                              "gender": "female", "nickname": "ひなた"})
         self.assertEqual(user_records.hospital_fee_averages("user-a", ["clinic:1"]), {})
         self.assertEqual(user_records.hospital_fee_averages("user-b", ["clinic:1"]), {})
@@ -202,6 +202,13 @@ class UserRecordTests(unittest.TestCase):
         return user_records.save_profile(subject, {"universityId": user_records.MIYAZAKI_UNIVERSITY_ID,
                                                    "grade": grade, "gender": "female", "nickname": "ひなた"})
 
+    def legacy_profile(self, subject, value):
+        profile = {**value, "universityName": user_records.UNIVERSITIES[value["universityId"]]["name"]}
+        with user_records.connect_records() as connection:
+            connection.execute("INSERT INTO profiles VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload",
+                               (subject, json.dumps(profile)))
+        return profile
+
     def published_record(self, **overrides):
         return {**self.record, "note": "説明が丁寧でした。", "reviewSharing": {"published": True}, **overrides}
 
@@ -219,7 +226,7 @@ class UserRecordTests(unittest.TestCase):
         self.assertFalse(public["isOwnRecord"])
         self.assertNotEqual(public["id"], self.record["id"])
         self.assertEqual(set(public), {"id", "hospitalId", "note", "gradeLabel", "stayMinutes", "feeAmount",
-                                       "reservationStatus", "isOwnRecord"})
+                                       "reservationStatus", "isOwnRecord", "arrivalAt", "leaveAt"})
         user_records.save_record("user-a", self.published_record())
         self.assertEqual(len(user_records.list_reviews("user-b", "clinic:1")), 1)
         self.assertEqual(user_records.list_reviews("user-b", "clinic:2"), [])
@@ -230,7 +237,7 @@ class UserRecordTests(unittest.TestCase):
         sharing = {"published": True, **{field: False for field in user_records.REVIEW_FIELDS}}
         user_records.save_record("user-a", self.published_record(reviewSharing=sharing))
         self.assertEqual(set(user_records.list_reviews("user-b", "clinic:1")[0]),
-                         {"id", "hospitalId", "note", "isOwnRecord"})
+                         {"id", "hospitalId", "note", "isOwnRecord", "arrivalAt", "leaveAt"})
         with self.assertRaises(ValueError):
             user_records.unpublish_review("user-b", "visit-1")
         self.assertEqual(len(user_records.list_reviews("user-b", "clinic:1")), 1)
@@ -248,8 +255,8 @@ class UserRecordTests(unittest.TestCase):
         public = user_records.list_reviews("user-b", "clinic:1")[0]
         self.assertEqual(public["gradeLabel"], "学部3年")
         self.assertNotIn("gradeBand", public)
-        self.assertNotIn("arrivalAt", public)
-        self.assertNotIn("leaveAt", public)
+        self.assertEqual(public["arrivalAt"], self.record["arrivalAt"])
+        self.assertEqual(public["leaveAt"], self.record["leaveAt"])
         legacy = {"hospitalId": "clinic:1", "gradeBand": "学部3〜4年", "note": "以前の口コミ"}
         with user_records.connect_records() as connection:
             connection.execute("INSERT INTO reviews VALUES (?, ?, ?, ?)",
@@ -259,55 +266,48 @@ class UserRecordTests(unittest.TestCase):
         self.assertEqual(legacy_public["gradeBand"], "学部3〜4年")
         self.assertNotIn("gradeLabel", legacy_public)
 
-    def test_precise_visit_times_require_explicit_consent_and_can_be_removed(self):
+    def test_precise_visit_times_are_included_for_all_public_reviews(self):
         self.miyazaki_profile()
-        value = self.structured_review(showVisitTimes=True)
-        for sharing in ({"published": True}, {"published": True, "showVisitTimes": False}):
+        value = self.structured_review()
+        for sharing in ({"published": True}, {"published": True, "showVisitTimes": False},
+                        {"published": True, "showVisitTimes": True}):
             saved = user_records.save_record("user-a", {**value, "reviewSharing": sharing})
-            self.assertFalse(saved["reviewSharing"]["showVisitTimes"])
+            self.assertTrue(saved["reviewSharing"]["showVisitTimes"])
             public = user_records.list_reviews("user-b", "clinic:1")[0]
             self.assertEqual(public["visitedMonth"], "2026-10")
-            self.assertNotIn("arrivalAt", public)
-            self.assertNotIn("leaveAt", public)
-        consented = {**value, "reviewSharing": {"published": True, "showVisitTimes": True}}
-        user_records.save_record("user-a", consented)
-        public = user_records.list_reviews("user-b", "clinic:1")[0]
-        self.assertEqual(public["arrivalAt"], value["arrivalAt"])
-        self.assertEqual(public["leaveAt"], value["leaveAt"])
-        user_records.save_record("user-a", {**consented, "reviewSharing": {"published": True, "showVisitTimes": False}})
-        public = user_records.list_reviews("user-b", "clinic:1")[0]
-        self.assertNotIn("arrivalAt", public)
-        self.assertNotIn("leaveAt", public)
+            self.assertEqual(public["arrivalAt"], value["arrivalAt"])
+            self.assertEqual(public["leaveAt"], value["leaveAt"])
         with self.assertRaises(ValueError):
-            user_records.validate_record({**consented, "reviewSharing": {"published": True, "showVisitTimes": "true"}})
-        user_records.save_record("user-a", {**consented, "reviewSharing": {"published": False, "showVisitTimes": True}})
+            user_records.validate_record({**value, "reviewSharing": {"published": True, "showVisitTimes": "true"}})
+        user_records.save_record("user-a", {**value, "reviewSharing": {"published": False}})
         self.assertEqual(user_records.list_reviews("user-b", "clinic:1"), [])
         self.assertEqual(user_records.list_records("user-a")[0]["arrivalAt"], value["arrivalAt"])
 
-    def test_precise_visit_times_require_explicit_consent_and_can_be_removed(self):
-        self.miyazaki_profile()
-        value = self.structured_review(showVisitTimes=True)
-        for sharing in ({"published": True}, {"published": True, "showVisitTimes": False}):
-            saved = user_records.save_record("user-a", {**value, "reviewSharing": sharing})
-            self.assertFalse(saved["reviewSharing"]["showVisitTimes"])
-            public = user_records.list_reviews("user-b", "clinic:1")[0]
-            self.assertEqual(public["visitedMonth"], "2026-10")
-            self.assertNotIn("arrivalAt", public)
-            self.assertNotIn("leaveAt", public)
-        consented = {**value, "reviewSharing": {"published": True, "showVisitTimes": True}}
-        user_records.save_record("user-a", consented)
-        public = user_records.list_reviews("user-b", "clinic:1")[0]
-        self.assertEqual(public["arrivalAt"], value["arrivalAt"])
-        self.assertEqual(public["leaveAt"], value["leaveAt"])
-        user_records.save_record("user-a", {**consented, "reviewSharing": {"published": True, "showVisitTimes": False}})
-        public = user_records.list_reviews("user-b", "clinic:1")[0]
-        self.assertNotIn("arrivalAt", public)
-        self.assertNotIn("leaveAt", public)
-        with self.assertRaises(ValueError):
-            user_records.validate_record({**consented, "reviewSharing": {"published": True, "showVisitTimes": "true"}})
-        user_records.save_record("user-a", {**consented, "reviewSharing": {"published": False, "showVisitTimes": True}})
-        self.assertEqual(user_records.list_reviews("user-b", "clinic:1"), [])
-        self.assertEqual(user_records.list_records("user-a")[0]["arrivalAt"], value["arrivalAt"])
+    def test_legacy_public_reviews_use_only_the_matching_visits_times(self):
+        self.miyazaki_profile("user-a")
+        self.miyazaki_profile("user-b")
+        user_records.save_record("user-a", self.structured_review())
+        user_records.save_record("user-b", self.structured_review(arrivalAt="2026-10-13T00:10:00Z",
+                                                                  leaveAt="2026-10-13T00:45:00Z"))
+        user_records.save_record("user-a", {**self.record, "id": "private"})
+        with user_records.connect_records() as connection:
+            rows = connection.execute("SELECT user_id, visit_id, payload FROM reviews").fetchall()
+            for owner, visit_id, payload in rows:
+                public = json.loads(payload)
+                public.pop("arrivalAt")
+                public.pop("leaveAt")
+                connection.execute("UPDATE reviews SET payload = ? WHERE user_id = ? AND visit_id = ?",
+                                   (json.dumps(public), owner, visit_id))
+        reviews = user_records.list_reviews("user-a", "clinic:1")
+        self.assertEqual(len(reviews), 2)
+        own = next(review for review in reviews if review["isOwnRecord"])
+        other = next(review for review in reviews if not review["isOwnRecord"])
+        self.assertEqual(own["arrivalAt"], self.record["arrivalAt"])
+        self.assertEqual(other["arrivalAt"], "2026-10-13T00:10:00Z")
+        self.assertNotIn("user_id", own)
+        self.assertNotIn("visit_id", own)
+        user_records.unpublish_review("user-a", self.record["id"])
+        self.assertEqual(len(user_records.list_reviews("user-a", "clinic:1")), 1)
 
     def test_review_publication_requires_miyazaki_profile_and_valid_consent(self):
         with self.assertRaises(ValueError):
@@ -319,7 +319,7 @@ class UserRecordTests(unittest.TestCase):
                 user_records.save_record("user-a", self.published_record(**replacement))
         user_records.save_record("user-a", self.published_record())
         other_school = next(code for code in user_records.UNIVERSITIES if code != user_records.MIYAZAKI_UNIVERSITY_ID)
-        user_records.save_profile("user-a", {"universityId": other_school, "grade": "4", "gender": "female", "nickname": "ひなた"})
+        self.legacy_profile("user-a", {"universityId": other_school, "grade": "4", "gender": "female", "nickname": "ひなた"})
         self.assertEqual(user_records.list_reviews("user-b", "clinic:1"), [])
         with self.assertRaises(ValueError):
             user_records.save_record("user-a", self.published_record())
@@ -327,7 +327,7 @@ class UserRecordTests(unittest.TestCase):
                                 ("master1", "修士1年"), ("doctor3", "博士3年"), ("other", "学生")):
             self.assertEqual(user_records.grade_label(grade), expected)
 
-    def test_review_api_authentication_and_ownership(self):
+    def test_review_api_authentication_and_publication_cannot_be_withdrawn(self):
         self.miyazaki_profile("user-a")
         self.miyazaki_profile("user-b", "2")
         user_records.save_record("user-a", self.published_record())
@@ -348,13 +348,13 @@ class UserRecordTests(unittest.TestCase):
                 status, data = request("GET", "/api/reviews?hospitalId=clinic:1")
                 self.assertEqual(status, 200)
                 self.assertEqual(len(data["reviews"]), 1)
-                self.assertNotIn("arrivalAt", data["reviews"][0])
-                self.assertEqual(request("DELETE", "/api/reviews?visitId=visit-1")[0], 404)
+                self.assertEqual(data["reviews"][0]["arrivalAt"], self.record["arrivalAt"])
+                self.assertEqual(request("DELETE", "/api/reviews?visitId=visit-1")[0], 405)
             with patch("server.authenticated_subject", return_value="user-a"):
-                self.assertEqual(request("DELETE", "/api/reviews?visitId=visit-1")[0], 200)
-                self.assertEqual(request("GET", "/api/reviews?hospitalId=clinic:1")[1]["reviews"], [])
+                self.assertEqual(request("DELETE", "/api/reviews?visitId=visit-1")[0], 405)
+                self.assertEqual(len(request("GET", "/api/reviews?hospitalId=clinic:1")[1]["reviews"]), 1)
             other_school = next(code for code in user_records.UNIVERSITIES if code != user_records.MIYAZAKI_UNIVERSITY_ID)
-            user_records.save_profile("user-b", {"universityId": other_school, "grade": "2", "gender": "female", "nickname": "ひなた"})
+            self.legacy_profile("user-b", {"universityId": other_school, "grade": "2", "gender": "female", "nickname": "ひなた"})
             with patch("server.authenticated_subject", return_value="user-b"):
                 self.assertEqual(request("GET", "/api/reviews?hospitalId=clinic:1")[0], 403)
         finally:
@@ -366,6 +366,54 @@ class UserRecordTests(unittest.TestCase):
         return {**self.published_record(), "reviewVersion": 2, "note": "", "nickname": "ひなた", "visitType": "初診",
                 "waitingMinutes": "20", "positivePoints": ["説明が分かりやすい"],
                 "sceneText": "薬の使い方を紙に書いてくれた", "adviceText": "支払いは現金だった", **overrides}
+
+    def test_publish_all_reviews_includes_private_and_withdrawn_history_without_duplicates(self):
+        self.miyazaki_profile("user-a")
+        self.miyazaki_profile("user-b", "2")
+        private = self.structured_review(reviewSharing={"published": False, "showFee": False},
+                                         universityEmailVerified=True, email="private@example.com")
+        user_records.save_record("user-a", private)
+        user_records.save_record("user-b", self.structured_review())
+        user_records.unpublish_review("user-b", self.record["id"])
+        user_records.save_record("user-a", self.structured_review(id="existing"), verified_email_university="doshisha")
+        original = next(review for review in user_records.list_reviews("user-a", "clinic:1")
+                        if review["universityEmailVerified"])
+        self.assertEqual(user_records.publish_all_reviews("user-a"), 1)
+        self.assertFalse(user_records.list_records("user-b")[0]["reviewSharing"]["published"])
+        self.assertEqual(user_records.publish_all_reviews(), 1)
+        self.assertEqual(user_records.publish_all_reviews(), 0)
+        reviews = user_records.list_reviews("user-a", "clinic:1")
+        self.assertEqual(len(reviews), 3)
+        migrated = next(review for review in reviews if review["isOwnRecord"] and review["id"] != original["id"])
+        self.assertEqual(migrated["arrivalAt"], self.record["arrivalAt"])
+        self.assertEqual(migrated["sceneText"], private["sceneText"])
+        self.assertFalse(migrated["universityEmailVerified"])
+        self.assertNotIn("feeAmount", migrated)
+        self.assertNotIn("email", migrated)
+        self.assertNotIn("user_id", migrated)
+        self.assertEqual(next(review for review in reviews if review["id"] == original["id"]), original)
+        self.assertEqual(len(user_records.list_records("user-a")), 2)
+        self.assertTrue(all(record["reviewSharing"]["published"] for record in user_records.list_records("user-a")))
+
+    def test_publish_history_handles_legacy_fields_and_skips_unfinished_or_ineligible_records(self):
+        self.miyazaki_profile()
+        legacy = user_records.save_record("user-a", self.record)
+        legacy.update(feeAmount="", note="以前の記録の文章", email="private@example.com")
+        unfinished = {**legacy, "id": "unfinished", "status": "measuring", "leaveAt": None}
+        invalid = {**legacy, "id": "invalid", "leaveAt": "not-a-time"}
+        for record in (legacy, unfinished, invalid):
+            with user_records.connect_records() as connection:
+                connection.execute("INSERT OR REPLACE INTO visits VALUES (?, ?, ?)",
+                                   ("user-a", record["id"], json.dumps(record)))
+        user_records.save_record("no-profile", self.record)
+        self.assertEqual(user_records.publish_all_reviews(), 1)
+        review = user_records.list_reviews("user-b", "clinic:1")[0]
+        self.assertEqual(review["note"], legacy["note"])
+        self.assertEqual(review["nickname"], "ひなた")
+        self.assertEqual(review["feeAmount"], "")
+        self.assertNotIn("email", review)
+        self.assertNotIn("universityEmailVerified", review)
+        self.assertEqual(len(user_records.list_records("user-a")), 3)
 
     def test_review_nickname_comes_from_registered_profile(self):
         self.miyazaki_profile()
@@ -391,10 +439,10 @@ class UserRecordTests(unittest.TestCase):
         self.assertEqual(public["waitingMinutes"], 20)
         self.assertEqual(public["sceneText"], "")
         self.assertFalse(public["universityEmailVerified"])
-        self.assertNotIn("arrivalAt", public)
+        self.assertEqual(public["arrivalAt"], value["arrivalAt"])
         self.assertNotIn("email", public)
         self.assertNotIn("user_id", public)
-        user_records.save_record("user-a", value, university_email_verified=True)
+        user_records.save_record("user-a", value, verified_email_university="miyazaki")
         self.assertTrue(user_records.list_reviews("user-b", "clinic:1")[0]["universityEmailVerified"])
         self.assertEqual(user_records.visited_month("2026-09-30T15:00:00Z"), "2026-10")
         self.assertEqual(user_records.visited_month("2026-09-30T14:59:59Z"), "2026-09")
@@ -455,12 +503,12 @@ class UserRecordTests(unittest.TestCase):
 
     def test_university_email_requires_auth0_verified_student_email_and_subject(self):
         identity = {"sub": "user-a", "email": "test@student.miyazaki-u.ac.jp", "email_verified": True}
-        for changes, expected in (({}, True), ({"email_verified": False}, False), ({"email_verified": "true"}, False),
-                                  ({"sub": "other-user"}, False), ({"email": "test@miyazaki-u.ac.jp"}, False),
-                                  ({"email": "test@student.miyazaki-u.ac.jp.evil.example"}, False),
-                                  ({"email": "@student.miyazaki-u.ac.jp"}, False), ({"email": None}, False)):
+        for changes, expected in (({}, "miyazaki"), ({"email_verified": False}, None), ({"email_verified": "true"}, None),
+                                  ({"sub": "other-user"}, None), ({"email": "test@miyazaki-u.ac.jp"}, None),
+                                  ({"email": "test@student.miyazaki-u.ac.jp.evil.example"}, None),
+                                  ({"email": "@student.miyazaki-u.ac.jp"}, None), ({"email": None}, None)):
             with self.subTest(changes=changes), patch("user_records.urlopen", return_value=BytesIO(json.dumps({**identity, **changes}).encode())) as lookup:
-                self.assertEqual(user_records.verify_university_email("user-a", "Bearer test-token"), expected)
+                self.assertEqual(user_records.verified_email_university("user-a", "Bearer test-token"), expected)
                 request = lookup.call_args.args[0]
                 self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
                 self.assertTrue(request.full_url.endswith("/userinfo"))
@@ -480,12 +528,34 @@ class UserRecordTests(unittest.TestCase):
             return result
         try:
             with patch("server.authenticated_subject", return_value="user-a"):
-                with patch("server.verify_university_email", return_value=True) as verify:
+                with patch("server.verified_email_university", return_value="miyazaki") as verify, patch(
+                    "server.email_verification_status", return_value={"universityEmailVerified": True,
+                    "verifiedEmailUniversity": "miyazaki", "status": "verified"}):
                     self.assertEqual(post("/api/email-verification")[1]["universityEmailVerified"], True)
-                    self.assertEqual(post("/api/visits", self.structured_review())[0], 201)
+                    status, result = post("/api/visits", self.structured_review(reviewSharing={"published": False}))
+                    self.assertEqual(status, 201)
+                    self.assertTrue(result["visit"]["reviewSharing"]["published"])
                     verify.assert_called_with("user-a", "Bearer test-token")
                 self.assertTrue(user_records.list_reviews("user-b", "clinic:1")[0]["universityEmailVerified"])
-                with patch("server.verify_university_email", side_effect=URLError("unavailable")):
+                with patch("server.verified_email_university", return_value="doshisha"), patch(
+                    "server.email_verification_status", return_value={"universityEmailVerified": True,
+                    "verifiedEmailUniversity": "doshisha", "status": "verified"}):
+                    self.assertEqual(post("/api/email-verification")[1], {
+                        "universityEmailVerified": True, "verifiedEmailUniversity": "doshisha",
+                        "status": "verified", "updatedReviews": 1})
+                    self.assertEqual(post("/api/visits", self.structured_review(verifiedEmailUniversity="miyazaki"))[0], 201)
+                public = user_records.list_reviews("user-b", "clinic:1")[0]
+                self.assertTrue(public["universityEmailVerified"])
+                self.assertEqual(public["verifiedEmailUniversity"], "doshisha")
+                self.assertNotIn("email", public)
+                with patch("server.verified_email_university", return_value=None):
+                    self.assertEqual(post("/api/visits", self.structured_review(
+                        universityEmailVerified=True, verifiedEmailUniversity="doshisha"))[0], 201)
+                public = user_records.list_reviews("user-b", "clinic:1")[0]
+                self.assertFalse(public["universityEmailVerified"])
+                self.assertNotIn("verifiedEmailUniversity", public)
+                with patch("server.verified_email_university", side_effect=URLError("unavailable")), patch(
+                    "server.email_verification_status", side_effect=URLError("unavailable")):
                     self.assertEqual(post("/api/email-verification")[0], 503)
                     self.assertEqual(post("/api/visits", self.structured_review())[0], 201)
                 self.assertFalse(user_records.list_reviews("user-b", "clinic:1")[0]["universityEmailVerified"])
@@ -493,6 +563,59 @@ class UserRecordTests(unittest.TestCase):
             app.shutdown()
             app.server_close()
             thread.join()
+
+    def test_email_verification_explains_missing_badges_without_revealing_email(self):
+        identity = {"sub": "user-a", "email": "test@mail4.doshisha.ac.jp", "email_verified": True}
+        for changes, status in (({}, "verified"), ({"email_verified": False}, "email_unverified"),
+                                ({"email": "test@example.com"}, "unsupported_domain"),
+                                ({"email": None}, "missing_email"), ({"sub": "user-b"}, "identity_mismatch")):
+            with self.subTest(status=status), patch("user_records.urlopen", return_value=BytesIO(json.dumps({**identity, **changes}).encode())):
+                result = user_records.email_verification_status("user-a", "Bearer token")
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["universityEmailVerified"], status == "verified")
+                self.assertNotIn("email", result)
+                if status != "verified":
+                    self.assertIsNone(result["verifiedEmailUniversity"])
+
+    def test_badge_sync_updates_only_owners_existing_public_reviews(self):
+        self.miyazaki_profile("user-a")
+        self.miyazaki_profile("user-b")
+        value = self.structured_review(reviewSharing={"published": True, "showFee": False, "showVisitTimes": False})
+        user_records.save_record("user-a", value)
+        user_records.save_record("user-b", value)
+        user_records.save_record("user-a", {**value, "id": "private", "reviewSharing": {"published": False}})
+        user_records.save_record("user-a", {**value, "id": "withdrawn"})
+        user_records.unpublish_review("user-a", "withdrawn")
+        before = next(review for review in user_records.list_reviews("user-a", "clinic:1") if review["isOwnRecord"])
+        self.assertEqual(user_records.sync_review_email_badges("user-a", None), 0)
+        self.assertEqual(user_records.sync_review_email_badges("user-a", "doshisha"), 1)
+        self.assertEqual(user_records.sync_review_email_badges("user-a", "doshisha"), 0)
+        reviews = user_records.list_reviews("user-a", "clinic:1")
+        self.assertEqual(len(reviews), 2)
+        own = next(review for review in reviews if review["isOwnRecord"])
+        other = next(review for review in reviews if not review["isOwnRecord"])
+        self.assertTrue(own["universityEmailVerified"])
+        self.assertEqual(own["verifiedEmailUniversity"], "doshisha")
+        self.assertEqual({key: item for key, item in own.items() if key not in {"universityEmailVerified", "verifiedEmailUniversity"}},
+                         {key: item for key, item in before.items() if key not in {"universityEmailVerified", "verifiedEmailUniversity"}})
+        self.assertFalse(other["universityEmailVerified"])
+        self.assertNotIn("feeAmount", own)
+        self.assertEqual(own["arrivalAt"], value["arrivalAt"])
+        self.assertEqual(len(user_records.list_records("user-a")), 3)
+
+    def test_doshisha_email_verification_rejects_unverified_and_lookalike_addresses(self):
+        for number in ("", "1", "2", "3", "4"):
+            identity = {"sub": "user-a", "email": f"student@MAIL{number}.DOSHISHA.AC.JP", "email_verified": True}
+            with self.subTest(number=number), patch("user_records.urlopen", return_value=BytesIO(json.dumps(identity).encode())):
+                self.assertEqual(user_records.verified_email_university("user-a", "Bearer token"), "doshisha")
+        identity = {"sub": "user-a", "email": "student@mail4.doshisha.ac.jp", "email_verified": True}
+        for changes in ({"email_verified": False}, {"email_verified": "true"}, {"sub": "other-user"},
+                        {"email": "student@mail4.doshisha.ac.jp.evil.example"}, {"email": "student@evilmail4.doshisha.ac.jp"},
+                        {"email": "student@dwc.doshisha.ac.jp"}, {"email": "student@doshisha.ac.jp"},
+                        {"email": "student@mail5.doshisha.ac.jp"}, {"email": "@mail4.doshisha.ac.jp"},
+                        {"email": "student@@mail4.doshisha.ac.jp"}):
+            with self.subTest(changes=changes), patch("user_records.urlopen", return_value=BytesIO(json.dumps({**identity, **changes}).encode())):
+                self.assertIsNone(user_records.verified_email_university("user-a", "Bearer token"))
 
     def test_facility_search_only_returns_miyazaki_medical_facilities(self):
         database = Path(self.directory.name) / "facilities.sqlite3"
@@ -523,7 +646,7 @@ class UserRecordTests(unittest.TestCase):
         thread.start()
         try:
             with patch("server.DATABASE", database), patch("server.authenticated_subject", return_value="user-a"):
-                user_records.save_profile("user-a", {"universityId": next(iter(user_records.UNIVERSITIES)),
+                user_records.save_profile("user-a", {"universityId": user_records.MIYAZAKI_UNIVERSITY_ID,
                                                      "grade": "1", "gender": "prefer_not_to_say", "nickname": "ひなた"})
                 for suffix in ("", "&type=pharmacy", "&type=medical", "&" + urlencode({"prefecture": "京都府"})):
                     connection = HTTPConnection("127.0.0.1", app.server_port)
@@ -582,18 +705,68 @@ class UserRecordTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             university_locations.resolve_university_location("unknown")
 
+    def test_legacy_other_university_profile_requires_fixed_registration(self):
+        self.legacy_profile("user-b", {"universityId": "F126310107564",
+                                       "grade": "4", "gender": "prefer_not_to_say", "nickname": "テスト"})
+        user_records.save_record("user-b", self.record)
+        with self.assertRaises(ValueError):
+            user_records.save_record("user-b", self.structured_review())
+        app = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
+        thread = threading.Thread(target=app.serve_forever, daemon=True)
+        thread.start()
+        def get(path):
+            connection = HTTPConnection("127.0.0.1", app.server_port)
+            connection.request("GET", path)
+            response = connection.getresponse()
+            result = response.status, json.loads(response.read())
+            connection.close()
+            return result
+        try:
+            with patch("server.authenticated_subject", return_value="user-b"):
+                for path in ("/api/university-origin", "/api/reviews?hospitalId=clinic:1", "/api/facilities", "/api/visits"):
+                    status, data = get(path)
+                    self.assertEqual(status, 403)
+                    self.assertEqual(data["code"], "miyazaki_required")
+                self.assertEqual(get("/api/profile")[1]["profile"]["universityId"], "F126310107564")
+                connection = HTTPConnection("127.0.0.1", app.server_port)
+                connection.request("POST", "/api/profile", body=json.dumps({"nickname": "テスト", "grade": "4", "gender": "prefer_not_to_say"}))
+                response = connection.getresponse()
+                self.assertEqual(response.status, 201)
+                profile = json.loads(response.read())["profile"]
+                self.assertEqual(profile["universityId"], user_records.MIYAZAKI_UNIVERSITY_ID)
+                self.assertEqual(profile["universityName"], "宮崎大学")
+                connection.close()
+                status, data = get("/api/university-origin")
+                self.assertEqual(status, 200)
+                self.assertIn("木花キャンパス", data["origin"]["label"])
+                self.assertAlmostEqual(data["origin"]["latitude"], 31.8310233)
+                self.assertEqual(len(user_records.list_records("user-b")), 1)
+                self.assertEqual(get("/api/universities")[0], 404)
+        finally:
+            app.shutdown()
+            app.server_close()
+            thread.join()
+
     def test_profile_validation_and_ownership(self):
-        university = next(iter(user_records.UNIVERSITIES))
+        university = user_records.MIYAZAKI_UNIVERSITY_ID
         profile = {"universityId": university, "grade": "4", "gender": "prefer_not_to_say", "nickname": "ひなた"}
         saved = user_records.save_profile("user-a", {**profile, "user_id": "user-b"})
         self.assertEqual(saved["universityName"], user_records.UNIVERSITIES[university]["name"])
         self.assertIsNone(user_records.get_profile("user-b"))
         self.assertEqual(user_records.get_profile("user-a")["grade"], "4")
         self.assertEqual(saved["nickname"], "ひなた")
-        for invalid in ({"universityId": "unknown"}, {"grade": "invalid"}, {"gender": "invalid"},
+        for invalid in ({"grade": "invalid"}, {"gender": "invalid"},
                         {"nickname": " "}, {"nickname": "a" * 21}, {"nickname": None}, {"nickname": 1}):
             with self.assertRaises(ValueError):
                 user_records.save_profile("user-a", {**profile, **invalid})
+
+    def test_registration_always_sets_miyazaki_without_university_input(self):
+        value = {"nickname": "ひなた", "grade": "4", "gender": "prefer_not_to_say"}
+        for university in (None, "F126310107564", "unknown", []):
+            payload = value if university is None else {**value, "universityId": university, "universityName": "別の大学"}
+            saved = user_records.save_profile("user-a", payload)
+            self.assertEqual(saved["universityId"], user_records.MIYAZAKI_UNIVERSITY_ID)
+            self.assertEqual(saved["universityName"], "宮崎大学")
 
     def test_profile_gate_on_api(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
@@ -608,7 +781,7 @@ class UserRecordTests(unittest.TestCase):
                     self.assertEqual(response.status, 403)
                     response.read()
                     connection.close()
-                user_records.save_profile("user-a", {"universityId": next(iter(user_records.UNIVERSITIES)),
+                user_records.save_profile("user-a", {"universityId": user_records.MIYAZAKI_UNIVERSITY_ID,
                                                      "grade": "1", "gender": "prefer_not_to_say", "nickname": "ひなた"})
                 connection = HTTPConnection("127.0.0.1", server.server_port)
                 connection.request("GET", "/api/visits")
@@ -622,8 +795,10 @@ class UserRecordTests(unittest.TestCase):
             thread.join()
 
     def test_invalid_times_rejected(self):
-        with self.assertRaises(ValueError):
-            user_records.save_record("user-a", {**self.record, "leaveAt": "2026-10-11T00:00:00Z"})
+        for changes in ({"leaveAt": "2026-10-11T00:00:00Z"}, {"leaveAt": ""},
+                        {"leaveAt": None}, {"arrivalAt": ""}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                user_records.save_record("user-a", {**self.record, **changes})
 
     def test_token_signature_expiry_issuer_and_audience(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -690,6 +865,17 @@ class UserRecordTests(unittest.TestCase):
                     self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
                     if method == "GET":
                         self.assertIn(b"<svg", response.read())
+                    else:
+                        self.assertEqual(response.read(), b"")
+                    connection.close()
+                for method in ("GET", "HEAD"):
+                    connection = HTTPConnection("127.0.0.1", server.server_port)
+                    connection.request(method, "/assets/universities/miyazaki-symbol.png")
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.getheader("Content-Type"), "image/png")
+                    if method == "GET":
+                        self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
                     else:
                         self.assertEqual(response.read(), b"")
                     connection.close()

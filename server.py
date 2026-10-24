@@ -11,8 +11,9 @@ from urllib.error import URLError
 
 import jwt
 from user_records import (auth_config, authenticated_subject, list_records, save_record,
-                          get_profile, save_profile, UNIVERSITY_DATA, MIYAZAKI_UNIVERSITY_ID,
-                          list_reviews, unpublish_review, verify_university_email, validate_record,
+                          get_profile, save_profile, MIYAZAKI_UNIVERSITY_ID,
+                          list_reviews, verified_email_university, validate_record, publish_all_reviews,
+                          email_verification_status, sync_review_email_badges,
                           hospital_stay_averages, hospital_fee_averages)
 from university_locations import resolve_university_location
 
@@ -59,9 +60,6 @@ class AppHandler(SimpleHTTPRequestHandler):
             subject = self.require_member()
             if not subject:
                 return
-            if get_profile(subject)["universityId"] != MIYAZAKI_UNIVERSITY_ID:
-                self.send_json({"error": "口コミは宮崎大学の登録者が利用できます。", "code": "miyazaki_required"}, 403)
-                return
             hospital_id = parse_qs(parsed.query).get("hospitalId", [""])[0]
             if not hospital_id or len(hospital_id) > 300:
                 self.send_json({"error": "病院を指定してください。"}, 400)
@@ -79,23 +77,23 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not subject:
                 return
             try:
-                location = resolve_university_location(get_profile(subject)["universityId"])
+                location = resolve_university_location(MIYAZAKI_UNIVERSITY_ID)
                 self.send_json({"origin": location})
             except (ValueError, URLError, TimeoutError, KeyError, TypeError):
                 self.send_json({"error": "大学の所在地を取得できませんでした。時間をおいて再度検索してください。"}, 503)
             return
-        if parsed.path in {"/api/profile", "/api/universities"}:
+        if parsed.path == "/api/profile":
             subject = self.require_user()
             if subject:
-                self.send_json({"profile": get_profile(subject)} if parsed.path == "/api/profile" else UNIVERSITY_DATA)
+                self.send_json({"profile": get_profile(subject)})
             return
-        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg"}:
+        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg", "/assets/universities/miyazaki-symbol.png"}:
             self.send_json({"error": "Not found"}, 404)
             return
         super().do_GET()
 
     def do_HEAD(self):
-        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg"}:
+        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg", "/assets/universities/miyazaki-symbol.png"}:
             self.send_error(404)
             return
         super().do_HEAD()
@@ -131,23 +129,31 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def require_member(self):
         subject = self.require_user()
-        if subject and not get_profile(subject):
+        if not subject:
+            return None
+        profile = get_profile(subject)
+        if not profile:
             self.send_json({"error": "プロフィールを登録してください。", "code": "profile_required"}, 403)
+            return None
+        if profile.get("universityId") != MIYAZAKI_UNIVERSITY_ID:
+            self.send_json({"error": "宮崎大学向けのプロフィールを登録してください。", "code": "miyazaki_required"}, 403)
             return None
         return subject
 
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/email-verification":
-            subject = self.require_member()
+            subject = self.require_user()
             if not subject:
                 return
             try:
-                verified = verify_university_email(subject, self.headers.get("Authorization", ""))
+                status = email_verification_status(subject, self.headers.get("Authorization", ""))
             except (URLError, TimeoutError, ValueError):
                 self.send_json({"error": "大学メールの認証状態を確認できませんでした。再ログインしてから試してください。"}, 503)
                 return
-            self.send_json({"universityEmailVerified": verified})
+            updated = (sync_review_email_badges(subject, status["verifiedEmailUniversity"])
+                       if status["universityEmailVerified"] is True else 0)
+            self.send_json({**status, "updatedReviews": updated})
             return
         if path not in {"/api/visits", "/api/profile"}:
             self.send_json({"error": "Not found"}, 404)
@@ -162,15 +168,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if path == "/api/profile":
                 record = save_profile(subject, payload)
+                publish_all_reviews(subject)
             else:
                 payload = validate_record(payload)
-                verified = False
+                payload["reviewSharing"]["published"] = True
+                verified = None
                 if payload["reviewSharing"]["published"] and payload["reviewVersion"] == 2:
                     try:
-                        verified = verify_university_email(subject, self.headers.get("Authorization", ""))
+                        verified = verified_email_university(subject, self.headers.get("Authorization", ""))
                     except (URLError, TimeoutError, ValueError):
                         self.log_error("University email verification unavailable; no badge issued")
-                record = save_record(subject, payload, university_email_verified=verified)
+                record = save_record(subject, payload, verified_email_university=verified)
         except (ValueError, UnicodeDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
             return
@@ -184,13 +192,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         subject = self.require_member()
         if not subject:
             return
-        visit_id = parse_qs(parsed.query).get("visitId", [""])[0]
-        try:
-            record = unpublish_review(subject, visit_id)
-        except ValueError as error:
-            self.send_json({"error": str(error)}, 404)
-            return
-        self.send_json({"visit": record})
+        self.send_json({"error": "口コミはすべて公開されます。公開の切り替えはできません。"}, 405)
 
     def handle_facilities(self, query, subject):
         try:
@@ -289,5 +291,6 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     mimetypes.add_type("application/javascript", ".js")
+    print(f"Published historical reviews: {publish_all_reviews()}")
     print(f"Campus Clinic Finder: http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST, PORT), AppHandler).serve_forever()

@@ -11,7 +11,7 @@
       crossorigin=""
     />
     <link rel="stylesheet" href="ui.generated.css" />
-    <link rel="stylesheet" href="styles.css?v=20261024-departure-input" />
+    <link rel="stylesheet" href="styles.css?v=20261024-public-reviews" />
   </head>
   <body>
     <p class="access-status" id="accountStatus" role="status">
@@ -56,41 +56,12 @@
       <div class="access-body profile-body">
         <header class="access-brand">空きコマ診療</header>
         <h1 id="profileTitle">プロフィール</h1>
+        <p class="profile-campus">宮崎大学生専用</p>
         <form id="profileForm" class="profile-form" novalidate>
           <div class="profile-settings-fields">
             <label for="profileNickname">ニックネーム（公開名）
               <input class="du-input" id="profileNickname" type="text" maxlength="20" placeholder="例：ひなた" autocomplete="nickname" required />
             </label>
-            <div class="university-picker">
-              <label for="universitySearch"
-                >大学<span class="field-required">必須</span></label
-              >
-              <input
-                class="du-input"
-                id="universitySearch"
-                type="search"
-                placeholder="大学名・都道府県で検索"
-                autocomplete="off"
-                required
-                role="combobox"
-                aria-autocomplete="list"
-                aria-expanded="false"
-                aria-controls="universitySuggestions"
-              />
-              <input id="universitySelect" type="hidden" />
-              <span
-                id="universitySuggestions"
-                class="university-suggestions"
-                role="listbox"
-                aria-label="大学の候補"
-                hidden
-              ></span>
-              <span
-                id="universitySelection"
-                class="university-selection"
-                role="status"
-              ></span>
-            </div>
             <label
               >学年
               <select class="du-select" id="profileGrade" required>
@@ -151,6 +122,10 @@
             <div class="account-identity">
               <strong id="accountNickname"></strong>
               <span id="profileSummary"></span>
+            </div>
+            <div class="account-email-status" role="status">
+              <span class="review-verified" id="accountEmailBadge" hidden></span>
+              <p id="accountEmailStatus"></p>
             </div>
             <button class="account-logout" id="logoutButton" type="button">
               <img src="assets/icons/log-out.svg" width="20" height="20" alt="" aria-hidden="true" />
@@ -283,7 +258,6 @@
           <div class="screen-heading">
             <div>
               <h2 id="active-title">受診中</h2>
-              <p>Web版MVPでは手動で到着と終了を記録します。</p>
             </div>
           </div>
           <div id="activeVisit"></div>
@@ -388,6 +362,6 @@
       crossorigin=""
     ></script>
     <script src="https://cdn.auth0.com/js/auth0-spa-js/2.28/auth0-spa-js.production.js"></script>
-    <script src="app.js?v=20261024-departure-input"></script>
+    <script src="app.js?v=20261024-public-reviews"></script>
   </body>
 </html>

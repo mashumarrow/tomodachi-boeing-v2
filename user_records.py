@@ -26,6 +26,12 @@ UNIVERSITIES = {item["id"]: item for item in UNIVERSITY_DATA["universities"]}
 GRADES = {"1", "2", "3", "4", "5", "6", "master1", "master2", "doctor1", "doctor2", "doctor3", "other"}
 GENDERS = {"female", "male", "other", "prefer_not_to_say"}
 MIYAZAKI_UNIVERSITY_ID = "F145110111523"
+REVIEW_UNIVERSITY_IDS = (MIYAZAKI_UNIVERSITY_ID,)
+REVIEW_UNIVERSITY_PLACEHOLDERS = ",".join("?" for _ in REVIEW_UNIVERSITY_IDS)
+VERIFIED_EMAIL_DOMAINS = {
+    "student.miyazaki-u.ac.jp": "miyazaki",
+    **{f"mail{number}.doshisha.ac.jp": "doshisha" for number in ("", "1", "2", "3", "4")},
+}
 REVIEW_FIELDS = ("showGrade", "showReservation", "showDuration", "showFee", "showVisitType", "showWaiting", "showVisitTimes")
 POSITIVE_POINTS = ("説明が分かりやすい", "質問しやすい", "受付が丁寧", "プライバシーへの配慮", "その他", "特になし・分からない")
 
@@ -55,17 +61,43 @@ def authenticated_subject(authorization):
     return subject
 
 
-def verify_university_email(subject, authorization):
+def email_verification_status(subject, authorization):
     request = Request(f"https://{DOMAIN}/userinfo", headers={"Authorization": authorization, "Accept": "application/json"})
     with urlopen(request, timeout=8) as response:
         data = json.loads(response.read(65536))
-    if not isinstance(data, dict):
-        return False
+    result = {"universityEmailVerified": False, "verifiedEmailUniversity": None}
+    if not isinstance(data, dict) or data.get("sub") != subject:
+        return {**result, "status": "identity_mismatch"}
     email = data.get("email")
-    return (data.get("sub") == subject and data.get("email_verified") is True
-            and isinstance(email, str) and email.count("@") == 1
-            and bool(email.partition("@")[0])
-            and email.partition("@")[2].lower() == "student.miyazaki-u.ac.jp")
+    if not isinstance(email, str) or email.count("@") != 1 or not email.partition("@")[0]:
+        return {**result, "status": "missing_email"}
+    university = VERIFIED_EMAIL_DOMAINS.get(email.partition("@")[2].lower())
+    if not university:
+        return {**result, "status": "unsupported_domain"}
+    if data.get("email_verified") is not True:
+        return {**result, "status": "email_unverified"}
+    return {"universityEmailVerified": True, "verifiedEmailUniversity": university, "status": "verified"}
+
+
+def verified_email_university(subject, authorization):
+    return email_verification_status(subject, authorization)["verifiedEmailUniversity"]
+
+
+def sync_review_email_badges(subject, university):
+    if university not in ("miyazaki", "doshisha"):
+        return 0
+    updated = 0
+    with connect_records() as connection:
+        rows = connection.execute("SELECT visit_id, payload FROM reviews WHERE user_id = ?", (subject,)).fetchall()
+        for visit_id, payload in rows:
+            review = json.loads(payload)
+            if review.get("universityEmailVerified") is True and review.get("verifiedEmailUniversity") == university:
+                continue
+            review.update(universityEmailVerified=True, verifiedEmailUniversity=university)
+            connection.execute("UPDATE reviews SET payload = ? WHERE user_id = ? AND visit_id = ?",
+                               (json.dumps(review, ensure_ascii=False), subject, visit_id))
+            updated += 1
+    return updated
 
 
 def visited_month(arrival_at):
@@ -128,19 +160,19 @@ def hospital_stay_averages(subject, hospital_ids):
                       EXISTS (
                           SELECT 1 FROM profiles viewer
                           WHERE viewer.user_id = ?
-                            AND json_extract(viewer.payload, '$.universityId') = ?
+                            AND json_extract(viewer.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
                       )
                       AND EXISTS (
                           SELECT 1 FROM reviews r JOIN profiles author ON author.user_id = r.user_id
                           WHERE r.user_id = v.user_id AND r.visit_id = v.visit_id
                             AND r.hospital_id = json_extract(v.payload, '$.hospitalId')
                             AND json_type(r.payload, '$.stayMinutes') IN ('integer', 'real')
-                            AND json_extract(author.payload, '$.universityId') = ?
+                            AND json_extract(author.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
                       )
                   )
               )
             GROUP BY hospital_id
-        """, (*hospital_ids, subject, subject, MIYAZAKI_UNIVERSITY_ID, MIYAZAKI_UNIVERSITY_ID)).fetchall()
+        """, (*hospital_ids, subject, subject, *REVIEW_UNIVERSITY_IDS, *REVIEW_UNIVERSITY_IDS)).fetchall()
     return {hospital_id: {"averageStayMinutes": math.ceil(average), "staySampleCount": count}
             for hospital_id, average, count in rows}
 
@@ -157,10 +189,10 @@ def hospital_fee_averages(subject, hospital_ids):
             JOIN profiles author ON author.user_id = r.user_id
             JOIN profiles viewer ON viewer.user_id = ?
             WHERE r.hospital_id IN ({placeholders})
-              AND json_extract(author.payload, '$.universityId') = ?
-              AND json_extract(viewer.payload, '$.universityId') = ?
+              AND json_extract(author.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+              AND json_extract(viewer.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
               AND json_type(r.payload, '$.feeAmount') IN ('integer', 'text')
-        """, (subject, *hospital_ids, MIYAZAKI_UNIVERSITY_ID, MIYAZAKI_UNIVERSITY_ID)).fetchall()
+        """, (subject, *hospital_ids, *REVIEW_UNIVERSITY_IDS, *REVIEW_UNIVERSITY_IDS)).fetchall()
     totals = {}
     for hospital_id, fee in rows:
         if not str(fee).isdigit():
@@ -187,14 +219,12 @@ def get_profile(subject):
 def save_profile(subject, value):
     if not isinstance(value, dict):
         raise ValueError("プロフィールの形式が正しくありません。")
-    university_id = value.get("universityId")
+    university_id = MIYAZAKI_UNIVERSITY_ID
     grade = value.get("grade")
     gender = value.get("gender")
     nickname = value.get("nickname")
     if not isinstance(nickname, str) or not nickname.strip() or len(nickname) > 20:
         raise ValueError("ニックネームは1〜20文字で入力してください。")
-    if not isinstance(university_id, str) or university_id not in UNIVERSITIES:
-        raise ValueError("一覧から大学を選択してください。")
     if not isinstance(grade, str) or grade not in GRADES:
         raise ValueError("学年を選択してください。")
     if not isinstance(gender, str) or gender not in GENDERS:
@@ -285,10 +315,10 @@ def validate_record(value):
         raise ValueError("口コミの公開設定が正しくありません。")
     result["reviewSharing"] = {}
     for field in ("published", *REVIEW_FIELDS):
-        selected = sharing.get(field, field not in {"published", "showVisitTimes"})
+        selected = sharing.get(field, field != "published")
         if not isinstance(selected, bool):
             raise ValueError("口コミの公開設定が正しくありません。")
-        result["reviewSharing"][field] = selected
+        result["reviewSharing"][field] = True if field == "showVisitTimes" else selected
     if result["reviewSharing"]["published"]:
         if version == 1 and not result["note"]:
             raise ValueError("公開する口コミの文章を入力してください。")
@@ -305,14 +335,72 @@ def grade_label(grade):
     return "学生"
 
 
-def save_record(subject, value, *, university_email_verified=False):
+def public_review_payload(record, profile, previous=None, verified_email_university=None):
+    sharing = record.get("reviewSharing", {})
+    public = {"id": previous["id"] if previous else str(uuid4()),
+              "hospitalId": record["hospitalId"], "note": record.get("note", "")}
+    if record.get("reviewVersion", 1) == 2:
+        verified = verified_email_university in ("miyazaki", "doshisha")
+        public.update(nickname=profile.get("nickname", ""), visitedMonth=visited_month(record["arrivalAt"]),
+                      positivePoints=record.get("positivePoints", []), sceneText=record.get("sceneText", ""),
+                      adviceText=record.get("adviceText", ""), universityEmailVerified=verified)
+        if verified:
+            public["verifiedEmailUniversity"] = verified_email_university
+    if sharing.get("showGrade", True):
+        public["gradeLabel"] = grade_label(profile.get("grade", ""))
+    public.update(arrivalAt=record["arrivalAt"], leaveAt=record["leaveAt"])
+    for flag, field in (("showReservation", "reservationStatus"), ("showDuration", "stayMinutes"),
+                        ("showFee", "feeAmount"), ("showVisitType", "visitType"), ("showWaiting", "waitingMinutes")):
+        if record.get("reviewVersion", 1) == 1 and flag in {"showVisitType", "showWaiting"}:
+            continue
+        if sharing.get(flag, True) and field in record:
+            public[field] = record[field]
+    return public
+
+
+def publish_all_reviews(subject=None):
+    updated = 0
+    with connect_records() as connection:
+        rows = connection.execute(f"""
+            SELECT v.user_id, v.visit_id, v.payload, p.payload, r.payload
+            FROM visits v JOIN profiles p ON p.user_id = v.user_id
+            LEFT JOIN reviews r ON r.user_id = v.user_id AND r.visit_id = v.visit_id
+            WHERE json_extract(p.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+              AND json_extract(v.payload, '$.status') = 'completed'
+              AND (r.visit_id IS NULL OR COALESCE(json_extract(v.payload, '$.reviewSharing.published'), 0) != 1)
+              AND (? IS NULL OR v.user_id = ?)
+        """, (*REVIEW_UNIVERSITY_IDS, subject, subject)).fetchall()
+        for owner, visit_id, payload, profile_payload, previous_payload in rows:
+            record, profile = json.loads(payload), json.loads(profile_payload)
+            # Historical records can predate today's required fee and review fields.
+            try:
+                arrival = datetime.fromisoformat(record["arrivalAt"].replace("Z", "+00:00"))
+                leave = datetime.fromisoformat(record["leaveAt"].replace("Z", "+00:00"))
+                if not arrival.tzinfo or not leave.tzinfo or leave < arrival or not record.get("hospitalId"):
+                    continue
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+            record["reviewSharing"] = {**record.get("reviewSharing", {}), "published": True, "showVisitTimes": True}
+            record["stayMinutes"] = max(1, round((leave - arrival).total_seconds() / 60))
+            if not previous_payload:
+                public = public_review_payload(record, profile)
+                public.update(nickname=profile.get("nickname", ""), visitedMonth=visited_month(record["arrivalAt"]))
+                connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (?, ?, ?, ?)",
+                                   (owner, visit_id, record["hospitalId"], json.dumps(public, ensure_ascii=False)))
+            connection.execute("UPDATE visits SET payload = ? WHERE user_id = ? AND visit_id = ?",
+                               (json.dumps(record, ensure_ascii=False), owner, visit_id))
+            updated += 1
+    return updated
+
+
+def save_record(subject, value, *, verified_email_university=None):
     record = validate_record(value)
     with connect_records() as connection:
         sharing = record["reviewSharing"]
         if sharing["published"]:
             profile_row = connection.execute("SELECT payload FROM profiles WHERE user_id = ?", (subject,)).fetchone()
             profile = json.loads(profile_row[0]) if profile_row else {}
-            if profile.get("universityId") != MIYAZAKI_UNIVERSITY_ID:
+            if profile.get("universityId") not in REVIEW_UNIVERSITY_IDS:
                 raise ValueError("口コミの公開は宮崎大学の登録者が利用できます。")
             if record["reviewVersion"] == 2:
                 nickname = profile.get("nickname", "")
@@ -321,23 +409,8 @@ def save_record(subject, value, *, university_email_verified=False):
                 record["nickname"] = nickname
             previous = connection.execute("SELECT payload FROM reviews WHERE user_id = ? AND visit_id = ?",
                                           (subject, record["id"])).fetchone()
-            public = {"id": json.loads(previous[0])["id"] if previous else str(uuid4()),
-                      "hospitalId": record["hospitalId"], "note": record["note"]}
-            if record["reviewVersion"] == 2:
-                public.update(nickname=record["nickname"], visitedMonth=visited_month(record["arrivalAt"]),
-                              positivePoints=record["positivePoints"], sceneText=record["sceneText"],
-                              adviceText=record["adviceText"], universityEmailVerified=university_email_verified is True)
-            # Precise visit times require a separate opt-in, unlike the default month.
-            if sharing["showGrade"]:
-                public["gradeLabel"] = grade_label(profile["grade"])
-            if sharing["showVisitTimes"]:
-                public.update(arrivalAt=record["arrivalAt"], leaveAt=record["leaveAt"])
-            for flag, field in (("showReservation", "reservationStatus"), ("showDuration", "stayMinutes"),
-                                ("showFee", "feeAmount"), ("showVisitType", "visitType"), ("showWaiting", "waitingMinutes")):
-                if record["reviewVersion"] == 1 and flag in {"showVisitType", "showWaiting"}:
-                    continue
-                if sharing[flag]:
-                    public[field] = record[field]
+            public = public_review_payload(record, profile, json.loads(previous[0]) if previous else None,
+                                           verified_email_university)
             connection.execute("""
                 INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (?, ?, ?, ?)
                 ON CONFLICT(user_id, visit_id) DO UPDATE SET hospital_id = excluded.hospital_id, payload = excluded.payload
@@ -353,12 +426,22 @@ def save_record(subject, value, *, university_email_verified=False):
 
 def list_reviews(subject, hospital_id):
     with connect_records() as connection:
-        rows = connection.execute("""
-            SELECT r.user_id, r.payload FROM reviews r JOIN profiles p ON p.user_id = r.user_id
-            WHERE r.hospital_id = ? AND json_extract(p.payload, '$.universityId') = ?
+        rows = connection.execute(f"""
+            SELECT r.user_id, r.payload, v.payload FROM reviews r JOIN profiles p ON p.user_id = r.user_id
+            LEFT JOIN visits v ON v.user_id = r.user_id AND v.visit_id = r.visit_id
+            WHERE r.hospital_id = ? AND json_extract(p.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
             ORDER BY r.rowid DESC LIMIT 50
-        """, (hospital_id, MIYAZAKI_UNIVERSITY_ID)).fetchall()
-    return [{**json.loads(payload), "isOwnRecord": owner == subject} for owner, payload in rows]
+        """, (hospital_id, *REVIEW_UNIVERSITY_IDS)).fetchall()
+    reviews = []
+    for owner, payload, visit_payload in rows:
+        public = {**json.loads(payload), "isOwnRecord": owner == subject}
+        # Older public snapshots may omit times; use only their matching visit.
+        if visit_payload:
+            visit = json.loads(visit_payload)
+            if visit.get("arrivalAt") and visit.get("leaveAt"):
+                public.update(arrivalAt=visit["arrivalAt"], leaveAt=visit["leaveAt"])
+        reviews.append(public)
+    return reviews
 
 
 def unpublish_review(subject, visit_id):
