@@ -7,14 +7,75 @@
 ## 必要な環境
 
 - Python 3.10以上
+- PostgreSQL 17（ローカルではDocker Composeでも起動可能）
 - Node.js（daisyUIの認証画面CSSを再生成する場合）
 - インターネット接続（OSRMの経路検索に使用）
 
-Auth0のトークン検証に必要なパッケージをインストールします。
+DB接続とAuth0のトークン検証に必要なパッケージをインストールします。
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
+
+## PostgreSQLのセットアップ
+
+病院・診療科・プロフィール・受診記録・口コミをPostgreSQLに保存します。実行中にSQLiteは使いません。接続先は `.env` または環境変数の `DATABASE_URL` で指定します。未設定・接続失敗時にSQLiteやデモデータへ切り替わることはありません。
+
+新しい環境でDockerを使う場合:
+
+```powershell
+docker compose up -d --wait postgres
+# .env がない場合だけ実行
+Copy-Item .env.example .env
+python -m pip install -r requirements.txt
+python scripts/migrate_to_postgres.py
+python server.py
+```
+
+```dotenv
+DATABASE_URL=postgresql://campus_clinic:local-development-only@127.0.0.1:5433/campus_clinic
+```
+
+`compose.yaml` はPC内の `127.0.0.1:5433` にだけ公開し、DB本体をDockerボリュームへ保存します。上記パスワードはローカル開発専用です。本番には使わないでください。`POSTGRES_PASSWORD` を変更する場合は `DATABASE_URL` も合わせます。既存ボリュームのパスワードは環境変数の変更だけでは変わりません。
+
+このPCでは、既存のシステム用PostgreSQLとは別に `.local/postgres/data` の専用DBを用意しています。Dockerは同時に起動しないでください。PC再起動後などの起動・終了コマンド:
+
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D ".local/postgres/data" -l ".local/postgres/postgres.log" -o "-h 127.0.0.1 -p 5433" start
+python server.py
+# アプリを Ctrl+C で終了してからDBを停止
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D ".local/postgres/data" stop
+```
+
+この専用DBはlocalhost接続のみの開発用trust認証です。外部公開や本番利用はせず、本番は管理サービスのパスワード・TLS付き接続を使ってください。`.local` はGit・Dockerへの同梱対象外です。
+
+### SQLiteからの初回移行
+
+旧バージョンのアプリを終了してから実行してください。元ファイルは読み取り専用で開き、削除・上書きしません。
+
+```powershell
+python scripts/migrate_to_postgres.py
+# 記録の保存場所が異なる場合
+python scripts/migrate_to_postgres.py --records "C:\path\to\user-records.sqlite3"
+# 病院データだけを移行する場合
+python scripts/migrate_to_postgres.py --facilities-only
+```
+
+初期値は `data/facilities.sqlite3` と `data/user-records.sqlite3` です。移行時に限り旧設定 `RECORDS_DATABASE` も読み、`--records` を最優先します。明示した記録ファイルが存在しない場合はエラーになります。プロフィール・記録・口コミのJSON、Auth0ユーザーID、病院ID、口コミの表示順を引き継ぎます。記録ファイルがない新規環境は空の記録DBで始めます。施設・記録それぞれの取り込みを一つのトランザクションで実行し、その単位で失敗時に取り消します。
+
+完了済みの取り込みは `data_imports` に記録し、再実行時はスキップします。退会後にコマンドを再実行しても過去の利用者を復活させません。初回でも移行先にデータがあれば上書きを拒否します。移行後の更新・バックアップの対象はPostgreSQLです。旧SQLiteやそのバックアップには移行時点の個人情報が残るため、運用者がアクセス制限・保管期限を管理してください。
+
+### テスト
+
+```powershell
+python -m unittest discover -s tests -v
+# UIテスト用パッケージとブラウザ
+python -m pip install playwright
+python -m playwright install chromium
+python scripts/check_onboarding_ui.py
+```
+
+テストは接続先DBにランダムな専用スキーマを作成し、終了時にそのスキーマだけを削除します。アプリのデータは変更しません。`TEST_DATABASE_URL` を設定すると別のテスト専用DBを使えます。スキーマの作成権限が必要です。接続先はテスト用・ローカルDBを指定し、本番DBには接続しないでください。
 
 ## 認証画面のスタイル
 
@@ -41,6 +102,8 @@ Auth0で「Single Page Application」を作成し、DomainとClient IDを取得�
 ```powershell
 Copy-Item .env.example .env
 python -m pip install -r requirements.txt
+docker compose up -d --wait postgres
+python scripts/migrate_to_postgres.py
 python server.py
 ```
 
@@ -50,6 +113,7 @@ python server.py
 AUTH0_DOMAIN=dev-dv16o3zjae8nchix.jp.auth0.com
 AUTH0_CLIENT_ID=4ShIE6ZNaKmHQHpL1zzEjVaRbOigG2sB
 AUTH0_AUDIENCE=https://campus-clinic-api
+DATABASE_URL=postgresql://campus_clinic:local-development-only@127.0.0.1:5433/campus_clinic
 ```
 
 PowerShellやデプロイ環境に設定済みの環境変数は `.env` より優先します（[python-dotenv](https://bbc2.github.io/python-dotenv/)）。手動で環境変数を設定する場合は次のとおりです。
@@ -135,9 +199,9 @@ python scripts/build_universities.py
 
 ### 公開環境の保存先
 
-Northflank等の環境変数にも `AUTH0_DOMAIN`、`AUTH0_CLIENT_ID`、`AUTH0_AUDIENCE` を設定します。ユーザー記録の初期保存先は `data/user-records.sqlite3` です。
+Northflank等の環境変数に `AUTH0_DOMAIN`、`AUTH0_CLIENT_ID`、`AUTH0_AUDIENCE` と、管理PostgreSQLの接続URL `DATABASE_URL` を設定します。
 
-公開運用では永続ボリュームを例えば `/records` にマウントし、`RECORDS_DATABASE=/records/user-records.sqlite3` を設定してください。実行ユーザーがそのディレクトリへ書き込める必要があります。ボリュームを用意しないと再デプロイ・再起動でユーザー記録が消える場合があります。複数インスタンスではこのSQLiteを共有せず、外部DBへ移行してください。Auth0は認証用で、受診記録自体は保存しません。
+アプリ本体の永続ボリュームは不要です。データは独立したPostgreSQLに保存され、アプリの再デプロイでも残ります。DBのバックアップ・保持期間を別途設定してください。`RECORDS_DATABASE` は廃止しました。Auth0は認証用で、受診記録自体は保存しません。
 
 Dockerビルド時にローカルのユーザー記録DBや `.env` は同梱しません。
 
@@ -151,7 +215,7 @@ cd "C:\同志社大学\4回生\github\tomodachi-boeing-v2"
 
 ### 2. 元データを配置
 
-GitHubの容量制限があるため、全国CSVと生成SQLiteはGit管理に含めていません。次のファイルを `db` フォルダへ配置してください。
+`data/facilities.sqlite3` がある場合は次の元CSV配置・生成を省略できます。全国CSVはGit管理に含めていません。初回移行用データを作り直す場合だけ、次のファイルを `db` フォルダへ配置してください。
 
 ```text
 db/
@@ -162,7 +226,7 @@ db/
 └── 05_pharmacy_20260601.csv
 ```
 
-### 3. 全国施設DBを生成
+### 3. 初回移行用の施設データを生成
 
 ```powershell
 python scripts/build_facility_db.py
@@ -174,9 +238,11 @@ python scripts/build_facility_db.py
 data/facilities.sqlite3
 ```
 
-### 4. アプリを起動
+### 4. PostgreSQLへ移行してアプリを起動
 
 ```powershell
+docker compose up -d --wait postgres
+python scripts/migrate_to_postgres.py
 python server.py
 ```
 
@@ -192,7 +258,7 @@ http://127.0.0.1:8000
 
 ## 普段の起動
 
-施設DBを一度生成した後は、次のコマンドだけで起動できます。
+PostgreSQLが起動していて、初回移行と `.env` の設定が済んでいれば、次のコマンドで起動できます。
 
 ```powershell
 cd "C:\同志社大学\4回生\github\tomodachi-boeing-v2"
@@ -201,17 +267,19 @@ python server.py
 
 ## データの再生成
 
-### 施設検索用SQLite
+### 初回移行用のSQLite
 
-元CSVを更新した場合に実行します。SQLiteには全国データを残し、検索APIで住所が `宮崎県` から始まる病院・診療所だけを抽出します。DBや元CSVから県外の行を削除する必要はありません。
+初回取り込み元のデータを作るコマンドです。アプリは生成したSQLiteを直接検索しません。PostgreSQLへ全国データを取り込み、検索APIで住所が `宮崎県` から始まる病院・診療所だけを抽出します。
 
 ```powershell
 python scripts/build_facility_db.py
 ```
 
+移行済みのDBには、SQLiteの再生成や移行コマンドの再実行だけでは変更を反映しません。移行済みマーカーを削除してユーザー記録を取り込み直すことはしないでください。
+
 ## 宮崎県の施設検索
 
-- 登録大学から半径12km以内の、宮崎県内の病院・診療所だけをSQLiteから検索
+- 登録大学から半径12km以内の、宮崎県内の病院・診療所だけをPostgreSQLから検索
 - 診療科で絞り込み、移動・受診時間を計算して最大15件を表示
 - APIで県を固定しているため、検索パラメーターを変更しても県外施設・薬局は返さない
 - 施設APIに接続できない場合はエラーを表示し、同梱データやデモ施設への切り替えは行わない
@@ -274,33 +342,58 @@ __pycache__/
 *.pyc
 ```
 
-`data/facilities.sqlite3` はNorthflankへのデプロイに必要なため、例外としてGit管理へ含めます。
+`data/facilities.sqlite3` は初回のPostgreSQL取り込み元として、例外的にGit管理へ含めます。ユーザー記録・DBバックアップ・接続パスワードはGitへ追加しないでください。
 
 ## Northflankへデプロイ
 
-このリポジトリは、ルートの `Dockerfile` を使ってNorthflankへデプロイできます。全国施設DBはコンテナへ同梱するため、`data/facilities.sqlite3` もGitへ追加します。元CSVは追加しません。
+ルートの `Dockerfile` でアプリをビルドし、同じプロジェクトの管理PostgreSQLへ接続します。`compose.yaml` はローカル開発専用で、Northflankでは使いません。`data/facilities.sqlite3` は一度だけ施設を取り込むジョブ用です。元CSV、`.env`、ローカルのユーザー記録やバックアップはイメージへ同梱しません。
 
 ### 1. デプロイ用ファイルをGitHubへ反映
 
 ```powershell
-git add .gitignore .dockerignore Dockerfile server.py README.md data/facilities.sqlite3
-git commit -m "Add Northflank deployment configuration"
+git add .gitignore .dockerignore .env.example Dockerfile requirements.txt database.py schema.sql server.py user_records.py university_locations.py scripts/migrate_to_postgres.py README.md
+git commit -m "Use PostgreSQL for facilities and user records"
 git push origin main
 ```
 
 SQLiteは約58MBあるためGitHubから警告されますが、100MBの上限内です。`db` フォルダのCSVは追加しないでください。
 
-### 2. Northflankでサービスを作成
+### 2. PostgreSQLとアプリを作成
 
 1. Northflankでプロジェクトを作成する
-2. 新しいCombined Serviceを作成する
-3. GitHubの `tomodachi-boeing-v2` リポジトリを接続する
-4. ブランチに `main` を選択する
-5. Build typeに `Dockerfile` を選択する
-6. Dockerfile pathを `/Dockerfile`、build contextを `/` にする
-7. Developer Sandboxの無料プランを選択する
+2. 同じプロジェクトにPostgreSQLのデータベースアドオンを作成する
+3. 新しいCombined Serviceを作成する
+4. GitHubの `tomodachi-boeing-v2` リポジトリを接続する
+5. ブランチに `main` を選択する
+6. Build typeに `Dockerfile` を選択する
+7. Dockerfile pathを `/Dockerfile`、build contextを `/` にする
 
-### 3. 公開ポートを設定
+### 3. 接続情報を設定し、初回データを移行
+
+アドオンの接続情報をSecret Group経由でアプリへ渡し、接続文字列を `DATABASE_URL` に割り当てます。接続先はNorthflankが発行する内部ホスト・ポート・DB名・ユーザー・パスワードを使い、ローカル用の値は使いません。TLSはアドオンの設定に合わせ、外部接続時はTLSを有効にしてください。DBをインターネットへ公開する必要はありません。
+
+```text
+DATABASE_URL=<管理PostgreSQLの接続文字列>
+AUTH0_DOMAIN=<Auth0のDomain>
+AUTH0_CLIENT_ID=<Auth0のClient ID>
+AUTH0_AUDIENCE=https://campus-clinic-api
+HOST=0.0.0.0
+PORT=8000
+```
+
+施設の初回取り込みは、アプリと同じイメージ・接続用Secretを使う一回限りのジョブで実行します。
+
+```sh
+python scripts/migrate_to_postgres.py --facilities-only
+```
+
+既存のローカル記録も本番へ引き継ぐ場合は、利用者が書き込まない状態にして、安全なDB接続（TLSまたはプライベートな転送）を用意し、ローカルから本番用 `DATABASE_URL` を指定して移行コマンドを実行します。アプリの公開前に完了させてください。接続文字列や記録DBをGitへ追加しないでください。すでに本番へプロフィールを登録している場合は、上書き防止で記録移行を拒否します。
+
+初回移行完了後、通常の `python server.py` でアプリを開始します。以降は再起動・デプロイのたびにSQLiteを取り込みません。自動実行するのはテーブル初期化と既存仕様の公開口コミ更新のみです。
+
+管理DBの作成は[Northflank公式ドキュメント](https://northflank.com/guides/deploy-postgres-database-on-northflank)、Secret Groupと接続文字列の別名は[接続設定](https://northflank.com/docs/v1/application/databases-and-persistence/connect-database-secrets-to-workloads)を参照してください。アドオン側の変数名が `POSTGRES_URI` なら、別名に `DATABASE_URL` を追加します。プラン・料金・無料枠の対象は契約時の管理画面で確認してください。
+
+### 4. 公開ポートとAuth0を設定
 
 Networkingで次のポートを追加します。
 
@@ -310,9 +403,9 @@ Protocol: HTTP
 Public: ON
 ```
 
-ポートにNorthflankの公開サブドメインを割り当て、デプロイが完了したら発行されたHTTPS URLを開きます。ログインには上記のAuth0環境変数と、ユーザー記録用の永続保存先も設定します。
+ポートにNorthflankの公開サブドメインを割り当てます。発行されたHTTPS URLをAuth0のAllowed Callback URLs・Allowed Logout URLs・Allowed Web Originsにも登録してから開いてください。
 
-> NorthflankのDeveloper Sandboxは無料枠ですが、アカウント確認のため支払い方法の登録が必要です。
+管理PostgreSQLはアプリとは別にバックアップを設定してください。Northflankへのデプロイ・本番DBへの移行は、このローカル作業だけでは実行されません。
 
 ## トラブルシューティング
 
@@ -324,15 +417,15 @@ Public: ON
 
 ### 検索で施設が表示されない
 
-1. `data/facilities.sqlite3` が存在するか確認する
+1. `DATABASE_URL` の接続先PostgreSQLが起動しているか確認する
 2. `python server.py` で起動しているか確認する
 3. 登録大学から12km以内に宮崎県内の対象診療科の施設があるか確認する
 4. PowerShellにAPIエラーが出ていないか確認する
 
-DBがない場合は再生成します。
+施設データが未登録の場合は、初回移行を実行します。
 
 ```powershell
-python scripts/build_facility_db.py
+python scripts/migrate_to_postgres.py --facilities-only
 ```
 
 ### OSRMの時間が取得できない
@@ -352,6 +445,6 @@ python scripts/build_facility_db.py
 - 滞在時間、費用目安、予定に間に合うかの表示
 - 病院詳細と匿名口コミ
 - 手動での到着・受診終了記録
-- 費用、予約有無、待ち時間の記録
-- ローカルストレージ保存
+- 費用、予約有無、よかった点・文章の記録
+- PostgreSQLへの保存（受診中の下書きはブラウザ保存）
 - カレンダー形式の受診ログと月間サマリー

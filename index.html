@@ -11,7 +11,7 @@
       crossorigin=""
     />
     <link rel="stylesheet" href="ui.generated.css" />
-    <link rel="stylesheet" href="styles.css?v=20261024-account-settings" />
+    <link rel="stylesheet" href="styles.css?v=20261024-mango-spread" />
   </head>
   <body>
     <p class="access-status" id="accountStatus" role="status">
@@ -59,8 +59,17 @@
         <p class="profile-campus">宮崎大学生専用</p>
         <form id="profileForm" class="profile-form" novalidate>
           <div class="profile-settings-fields">
-            <label for="profileNickname">ニックネーム（公開名）
-              <input class="du-input" id="profileNickname" type="text" maxlength="20" placeholder="例：ひなた" autocomplete="nickname" required />
+            <label for="profileNickname"
+              >ニックネーム（公開名）
+              <input
+                class="du-input"
+                id="profileNickname"
+                type="text"
+                maxlength="20"
+                placeholder="例：ひなた"
+                autocomplete="nickname"
+                required
+              />
             </label>
             <label
               >学年
@@ -114,9 +123,27 @@
           <h1>空きコマ診療</h1>
         </div>
         <div class="account-control" id="accountControl">
-          <button class="account-toggle" id="accountButton" type="button" aria-label="アカウント" aria-expanded="false" aria-controls="accountMenu" title="アカウント">
-            <img class="account-avatar" id="accountAvatar" alt="" referrerpolicy="no-referrer" hidden />
-            <span class="account-initial" id="accountInitial" aria-hidden="true"></span>
+          <button
+            class="account-toggle"
+            id="accountButton"
+            type="button"
+            aria-label="アカウント"
+            aria-expanded="false"
+            aria-controls="accountMenu"
+            title="アカウント"
+          >
+            <img
+              class="account-avatar"
+              id="accountAvatar"
+              alt=""
+              referrerpolicy="no-referrer"
+              hidden
+            />
+            <span
+              class="account-initial"
+              id="accountInitial"
+              aria-hidden="true"
+            ></span>
           </button>
           <div class="account-menu" id="accountMenu" hidden>
             <div class="account-identity">
@@ -124,15 +151,31 @@
               <span id="profileSummary"></span>
             </div>
             <div class="account-email-status" role="status">
-              <span class="review-verified" id="accountEmailBadge" hidden></span>
+              <span
+                class="review-verified"
+                id="accountEmailBadge"
+                hidden
+              ></span>
               <p id="accountEmailStatus"></p>
             </div>
             <button class="account-logout" id="settingsButton" type="button">
-              <img src="assets/icons/settings.svg" width="20" height="20" alt="" aria-hidden="true" />
+              <img
+                src="assets/icons/settings.svg"
+                width="20"
+                height="20"
+                alt=""
+                aria-hidden="true"
+              />
               アカウント設定
             </button>
             <button class="account-logout" id="logoutButton" type="button">
-              <img src="assets/icons/log-out.svg" width="20" height="20" alt="" aria-hidden="true" />
+              <img
+                src="assets/icons/log-out.svg"
+                width="20"
+                height="20"
+                alt=""
+                aria-hidden="true"
+              />
               ログアウト
             </button>
           </div>
@@ -191,6 +234,18 @@
               病院を検索する
             </button>
           </form>
+
+          <div class="search-mascot">
+            <img
+              src="assets/icons/mango.png?v=20261024-3"
+              width="112"
+              height="112"
+              alt="マンゴーの先生キャラクター"
+            />
+            <p class="search-mascot-bubble">
+              条件を選んでくれてありがとう！検索ボタンを押してね。
+            </p>
+          </div>
         </section>
 
         <section
@@ -211,6 +266,18 @@
             >
               条件を変更
             </button>
+          </div>
+
+          <div class="search-mascot search-mascot--compact">
+            <img
+              src="assets/icons/mango.png?v=20261024-3"
+              width="72"
+              height="72"
+              alt="マンゴーの先生キャラクター"
+            />
+            <p class="search-mascot-bubble">
+              宮崎大学生の口コミと戻れる時間を見ながら、行けそうな病院を選ぼう！
+            </p>
           </div>
 
           <div class="view-switch">
@@ -263,6 +330,17 @@
             <div>
               <h2 id="active-title">受診中</h2>
             </div>
+          </div>
+          <div class="search-mascot search-mascot--compact">
+            <img
+              src="assets/icons/mango.png?v=20261024-3"
+              width="72"
+              height="72"
+              alt="マンゴーの先生キャラクター"
+            />
+            <p class="search-mascot-bubble">
+              到着と終了の時刻を記録すると、受診メモを残せるよ。
+            </p>
           </div>
           <div id="activeVisit"></div>
         </section>
@@ -351,47 +429,133 @@
             </section>
           </div>
         </section>
-        <section class="screen" id="screen-settings" aria-labelledby="settingsTitle">
+        <section
+          class="screen"
+          id="screen-settings"
+          aria-labelledby="settingsTitle"
+        >
           <div class="settings-heading">
-            <button class="icon-button" id="settingsBackButton" type="button" aria-label="前の画面に戻る" title="戻る">
-              <img src="assets/icons/arrow-left.svg" width="20" height="20" alt="" />
+            <button
+              class="icon-button"
+              id="settingsBackButton"
+              type="button"
+              aria-label="前の画面に戻る"
+              title="戻る"
+            >
+              <img
+                src="assets/icons/arrow-left.svg"
+                width="20"
+                height="20"
+                alt=""
+              />
             </button>
             <h2 id="settingsTitle" tabindex="-1">アカウント設定</h2>
           </div>
           <form id="settingsForm" class="profile-form" novalidate>
             <fieldset class="profile-settings-fields" id="settingsFields">
               <legend class="settings-section-title">プロフィール</legend>
-              <div class="settings-university"><span>大学</span><strong>宮崎大学</strong></div>
-              <label for="settingsNickname">ニックネーム（公開名）
-                <input class="du-input" id="settingsNickname" type="text" maxlength="20" autocomplete="nickname" required />
+              <div class="settings-university">
+                <span>大学</span><strong>宮崎大学</strong>
+              </div>
+              <label for="settingsNickname"
+                >ニックネーム（公開名）
+                <input
+                  class="du-input"
+                  id="settingsNickname"
+                  type="text"
+                  maxlength="20"
+                  autocomplete="nickname"
+                  required
+                />
               </label>
-              <label for="settingsGrade">学年<select class="du-select" id="settingsGrade" required></select></label>
-              <label for="settingsGender">性別<select class="du-select" id="settingsGender" required></select></label>
+              <label for="settingsGrade"
+                >学年<select
+                  class="du-select"
+                  id="settingsGrade"
+                  required
+                ></select
+              ></label>
+              <label for="settingsGender"
+                >性別<select
+                  class="du-select"
+                  id="settingsGender"
+                  required
+                ></select
+              ></label>
             </fieldset>
-            <p class="settings-note">過去の口コミの名前・学年は、投稿時の内容のままです。性別は公開しません。</p>
+            <p class="settings-note">
+              過去の口コミの名前・学年は、投稿時の内容のままです。性別は公開しません。
+            </p>
             <p class="settings-feedback" id="settingsStatus" role="status"></p>
-            <button class="primary-button" id="settingsSaveButton" type="submit">変更を保存</button>
+            <button
+              class="primary-button"
+              id="settingsSaveButton"
+              type="submit"
+            >
+              変更を保存
+            </button>
           </form>
-          <section class="settings-withdrawal" aria-labelledby="withdrawalTitle">
+          <section
+            class="settings-withdrawal"
+            aria-labelledby="withdrawalTitle"
+          >
             <h3 id="withdrawalTitle">退会</h3>
             <p>プロフィール・受診記録・投稿した口コミをすべて削除します。</p>
-            <button class="danger-outline-button" id="withdrawButton" type="button">
-              <img src="assets/icons/trash-2.svg" width="18" height="18" alt="" />退会する
+            <button
+              class="danger-outline-button"
+              id="withdrawButton"
+              type="button"
+            >
+              <img
+                src="assets/icons/trash-2.svg"
+                width="18"
+                height="18"
+                alt=""
+              />退会する
             </button>
           </section>
         </section>
       </main>
 
-      <dialog class="withdraw-dialog" id="deleteAccountDialog" aria-labelledby="deleteAccountTitle" aria-describedby="deleteAccountDescription">
+      <dialog
+        class="withdraw-dialog"
+        id="deleteAccountDialog"
+        aria-labelledby="deleteAccountTitle"
+        aria-describedby="deleteAccountDescription"
+      >
         <form id="deleteAccountForm">
           <h2 id="deleteAccountTitle">退会しますか？</h2>
-          <p id="deleteAccountDescription">プロフィール、すべての受診記録、公開済みの口コミ、この端末の受診中の下書きを削除します。この操作は取り消せません。</p>
-          <p>Auth0のログインアカウントは削除されません。再登録しても、削除した記録は戻りません。</p>
-          <label class="withdraw-confirmation"><input id="deleteAccountConfirmed" type="checkbox" required />すべてのデータを削除することを確認しました</label>
+          <p id="deleteAccountDescription">
+            プロフィール、すべての受診記録、公開済みの口コミ、この端末の受診中の下書きを削除します。この操作は取り消せません。
+          </p>
+          <p>
+            Auth0のログインアカウントは削除されません。再登録しても、削除した記録は戻りません。
+          </p>
+          <label class="withdraw-confirmation"
+            ><input
+              id="deleteAccountConfirmed"
+              type="checkbox"
+              required
+            />すべてのデータを削除することを確認しました</label
+          >
           <p class="profile-feedback" id="deleteAccountStatus" role="alert"></p>
           <div class="withdraw-dialog-actions">
-            <button class="secondary-button" id="cancelDeleteAccount" type="button" autofocus>キャンセル</button>
-            <button class="danger-button" id="confirmDeleteAccount" type="submit" disabled>削除して退会</button>
+            <button
+              class="secondary-button"
+              id="cancelDeleteAccount"
+              type="button"
+              autofocus
+            >
+              キャンセル
+            </button>
+            <button
+              class="danger-button"
+              id="confirmDeleteAccount"
+              type="submit"
+              disabled
+            >
+              削除して退会
+            </button>
           </div>
         </form>
       </dialog>

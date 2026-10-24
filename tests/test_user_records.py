@@ -1,12 +1,11 @@
 import json
 import os
 import runpy
-import sqlite3
+import psycopg
 import tempfile
 import time
 import unittest
 import threading
-from contextlib import closing
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from io import StringIO, BytesIO
@@ -15,6 +14,7 @@ from urllib.parse import urlencode
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from contextlib import closing
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -23,14 +23,15 @@ from dotenv import load_dotenv
 import user_records
 import university_locations
 from server import AppHandler
+from tests.db_support import isolated_database
 
 
 class UserRecordTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.database_patch = patch.object(user_records, "RECORDS_DATABASE",
-                                           Path(self.directory.name) / "records.sqlite3")
-        self.database_patch.start()
+        self.database_context = isolated_database()
+        self.database_context.__enter__()
+        self.addCleanup(self.database_context.__exit__, None, None, None)
         self.record = {
             "id": "visit-1", "hospitalId": "clinic:1", "hospitalName": "Clinic",
             "department": "internal", "plannedAt": "2026-10-12T00:00:00Z",
@@ -39,7 +40,6 @@ class UserRecordTests(unittest.TestCase):
         }
 
     def tearDown(self):
-        self.database_patch.stop()
         self.directory.cleanup()
 
     def test_records_belong_to_authenticated_user(self):
@@ -66,7 +66,7 @@ class UserRecordTests(unittest.TestCase):
                                                  "universityEmailVerified": True, "verifiedEmailUniversity": "doshisha"})
         self.assertEqual(user_records.list_records("user-b")[0]["reviewProfile"]["gradeLabel"], "学部2年")
         with user_records.connect_records() as connection:
-            payload = connection.execute("SELECT payload FROM visits WHERE user_id = ?", ("user-a",)).fetchone()[0]
+            payload = connection.execute("SELECT payload FROM visits WHERE user_id = %s", ("user-a",)).fetchone()[0]
         self.assertNotIn("reviewProfile", json.loads(payload))
         self.assertNotIn("email", record["reviewProfile"])
 
@@ -106,13 +106,67 @@ class UserRecordTests(unittest.TestCase):
         self.miyazaki_profile()
         user_records.save_record("user-a", self.structured_review())
         with user_records.connect_records() as connection:
+            connection.execute("CREATE FUNCTION prevent_delete() RETURNS trigger LANGUAGE plpgsql AS "
+                               "$$ BEGIN RAISE EXCEPTION 'test failure'; END $$")
             connection.execute("CREATE TRIGGER prevent_profile_delete BEFORE DELETE ON profiles "
-                               "BEGIN SELECT RAISE(ABORT, 'test failure'); END")
-        with self.assertRaises(sqlite3.IntegrityError):
+                               "FOR EACH ROW EXECUTE FUNCTION prevent_delete()")
+        with self.assertRaises(psycopg.Error):
             user_records.delete_account("user-a")
         self.assertIsNotNone(user_records.get_profile("user-a"))
         self.assertEqual(len(user_records.list_records("user-a")), 1)
         self.assertEqual(len(user_records.list_reviews("user-a", "clinic:1")), 1)
+
+    def test_waiting_record_write_cannot_restore_a_deleted_account(self):
+        self.miyazaki_profile()
+        ready = threading.Event()
+        errors = []
+        original_lock = user_records.lock_user
+
+        def waiting_lock(connection, subject):
+            ready.set()
+            original_lock(connection, subject)
+
+        def save():
+            try:
+                user_records.save_record("user-a", self.structured_review())
+            except Exception as error:
+                errors.append(error)
+
+        with patch("user_records.lock_user", side_effect=waiting_lock):
+            with user_records.connect_records() as connection:
+                original_lock(connection, "user-a")
+                thread = threading.Thread(target=save, daemon=True)
+                thread.start()
+                self.assertTrue(ready.wait(5))
+                for table in ("reviews", "visits", "profiles"):
+                    connection.execute(f"DELETE FROM {table} WHERE user_id = %s", ("user-a",))
+            thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ValueError)
+        self.assertIsNone(user_records.get_profile("user-a"))
+        self.assertEqual(user_records.list_records("user-a"), [])
+
+    def test_database_failure_returns_503_without_credentials_or_payloads(self):
+        app = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
+        thread = threading.Thread(target=app.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch("server.authenticated_subject", return_value="user-a"), patch(
+                "server.get_profile", side_effect=psycopg.OperationalError("secret-password private-payload")
+            ):
+                with closing(HTTPConnection("127.0.0.1", app.server_port)) as connection:
+                    connection.request("GET", "/api/profile")
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 503)
+                    body = response.read().decode()
+                    self.assertNotIn("secret-password", body)
+                    self.assertNotIn("private-payload", body)
+                    self.assertIn("error", json.loads(body))
+        finally:
+            app.shutdown()
+            app.server_close()
+            thread.join()
 
     def test_account_api_requires_authentication_confirmation_and_uses_token_owner(self):
         self.miyazaki_profile("user-a")
@@ -137,7 +191,7 @@ class UserRecordTests(unittest.TestCase):
                 for body in ({}, {"confirmation": True}, [], None):
                     self.assertEqual(request("DELETE", "/api/account", body)[0], 400)
                 self.assertIsNotNone(user_records.get_profile("user-a"))
-                with patch("server.delete_account", side_effect=sqlite3.OperationalError("locked")):
+                with patch("server.delete_account", side_effect=psycopg.OperationalError("locked")):
                     self.assertEqual(request("DELETE", "/api/account", {"confirmation": "delete-account"})[0], 503)
                 self.assertEqual(request("PUT", "/api/profile", {"nickname": "変更後", "grade": "5", "gender": "male"})[0], 200)
                 self.assertEqual(user_records.get_profile("user-a")["nickname"], "変更後")
@@ -202,7 +256,7 @@ class UserRecordTests(unittest.TestCase):
                 {"stayMinutes": -5}, {"stayMinutes": 0}, {"stayMinutes": "35"}, {"stayMinutes": True},
             )):
                 payload = {**self.record, "status": "completed", "stayMinutes": 100, **replacement}
-                connection.execute("INSERT INTO visits VALUES (?, ?, ?)",
+                connection.execute("INSERT INTO visits VALUES (%s, %s, %s)",
                                    ("user-a", f"legacy-{index}", json.dumps(payload)))
         self.assertEqual(user_records.hospital_stay_averages("user-a", ["clinic:1"]), {
             "clinic:1": {"averageStayMinutes": 35, "staySampleCount": 1}})
@@ -230,7 +284,7 @@ class UserRecordTests(unittest.TestCase):
         user_records.save_record("user-b", public_b)
         # Existing reviews without a fee still must not affect the average.
         with user_records.connect_records() as connection:
-            connection.execute("INSERT INTO reviews VALUES (?, ?, ?, ?)",
+            connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (%s, %s, %s, %s)",
                                ("user-b", "missing-fee", "clinic:1", json.dumps({"hospitalId": "clinic:1", "feeAmount": ""})))
         user_records.save_record("user-b", self.published_record(
             id="hidden-fee", feeAmount="8000", reviewSharing={"published": True, "showFee": False}))
@@ -260,7 +314,7 @@ class UserRecordTests(unittest.TestCase):
         with user_records.connect_records() as connection:
             for index, fee in enumerate((None, "", " ", True, [], -100, 1.5, "unknown", "1200abc", "²", "10000001")):
                 payload = {"hospitalId": "clinic:1", "feeAmount": fee}
-                connection.execute("INSERT INTO reviews VALUES (?, ?, ?, ?)",
+                connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (%s, %s, %s, %s)",
                                    ("user-a", f"legacy-{index}", "clinic:1", json.dumps(payload)))
         self.assertEqual(user_records.hospital_fee_averages("user-a", ["clinic:1"]), {
             "clinic:1": {"averageFeeAmount": 500, "feeSampleCount": 2}})
@@ -304,7 +358,7 @@ class UserRecordTests(unittest.TestCase):
     def legacy_profile(self, subject, value):
         profile = {**value, "universityName": user_records.UNIVERSITIES[value["universityId"]]["name"]}
         with user_records.connect_records() as connection:
-            connection.execute("INSERT INTO profiles VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload",
+            connection.execute("INSERT INTO profiles VALUES (%s, %s) ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload",
                                (subject, json.dumps(profile)))
         return profile
 
@@ -358,7 +412,7 @@ class UserRecordTests(unittest.TestCase):
         self.assertEqual(public["leaveAt"], self.record["leaveAt"])
         legacy = {"hospitalId": "clinic:1", "gradeBand": "学部3〜4年", "note": "以前の口コミ"}
         with user_records.connect_records() as connection:
-            connection.execute("INSERT INTO reviews VALUES (?, ?, ?, ?)",
+            connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (%s, %s, %s, %s)",
                                ("user-a", "legacy-grade", "clinic:1", json.dumps(legacy)))
         legacy_public = next(review for review in user_records.list_reviews("user-b", "clinic:1")
                              if review.get("note") == "以前の口コミ")
@@ -395,7 +449,7 @@ class UserRecordTests(unittest.TestCase):
                 public = json.loads(payload)
                 public.pop("arrivalAt")
                 public.pop("leaveAt")
-                connection.execute("UPDATE reviews SET payload = ? WHERE user_id = ? AND visit_id = ?",
+                connection.execute("UPDATE reviews SET payload = %s WHERE user_id = %s AND visit_id = %s",
                                    (json.dumps(public), owner, visit_id))
         reviews = user_records.list_reviews("user-a", "clinic:1")
         self.assertEqual(len(reviews), 2)
@@ -502,7 +556,7 @@ class UserRecordTests(unittest.TestCase):
         invalid = {**legacy, "id": "invalid", "leaveAt": "not-a-time"}
         for record in (legacy, unfinished, invalid):
             with user_records.connect_records() as connection:
-                connection.execute("INSERT OR REPLACE INTO visits VALUES (?, ?, ?)",
+                connection.execute("INSERT INTO visits VALUES (%s, %s, %s) ON CONFLICT(user_id, visit_id) DO UPDATE SET payload = excluded.payload",
                                    ("user-a", record["id"], json.dumps(record)))
         user_records.save_record("no-profile", self.record)
         self.assertEqual(user_records.publish_all_reviews(), 1)
@@ -522,7 +576,7 @@ class UserRecordTests(unittest.TestCase):
         profile = user_records.get_profile("user-a")
         del profile["nickname"]
         with user_records.connect_records() as connection:
-            connection.execute("UPDATE profiles SET payload = ? WHERE user_id = ?", (json.dumps(profile), "user-a"))
+            connection.execute("UPDATE profiles SET payload = %s WHERE user_id = %s", (json.dumps(profile), "user-a"))
         with self.assertRaisesRegex(ValueError, "ニックネーム"):
             user_records.save_record("user-a", self.structured_review())
 
@@ -717,15 +771,7 @@ class UserRecordTests(unittest.TestCase):
                 self.assertIsNone(user_records.verified_email_university("user-a", "Bearer token"))
 
     def test_facility_search_only_returns_miyazaki_medical_facilities(self):
-        database = Path(self.directory.name) / "facilities.sqlite3"
-        with closing(sqlite3.connect(database)) as connection:
-            connection.executescript("""
-                CREATE TABLE facilities (
-                    id TEXT, type TEXT, name TEXT, address TEXT, latitude REAL,
-                    longitude REAL, website TEXT, open TEXT, median_wait INTEGER
-                );
-                CREATE TABLE facility_departments (facility_id TEXT, department TEXT);
-            """)
+        with user_records.connect_records() as connection:
             for facility_id, kind, address, latitude, longitude, department in (
                 ("hospital", "hospital", "宮崎県宮崎市", 31.831, 131.412, "internal"),
                 ("clinic", "clinic", "宮崎県宮崎市", 31.831, 131.412, "internal"),
@@ -736,15 +782,15 @@ class UserRecordTests(unittest.TestCase):
                 ("eye", "clinic", "宮崎県宮崎市", 31.831, 131.412, "eye"),
                 ("unknown-address", "hospital", "", 31.831, 131.412, "internal"),
             ):
-                connection.execute("INSERT INTO facilities VALUES (?, ?, ?, ?, ?, ?, '', '', 30)",
+                connection.execute("INSERT INTO facilities VALUES (%s, %s, %s, %s, %s, %s, '', '', 30)",
                                    (facility_id, kind, facility_id, address, latitude, longitude))
-                connection.execute("INSERT INTO facility_departments VALUES (?, ?)", (facility_id, department))
+                connection.execute("INSERT INTO facility_departments VALUES (%s, %s)", (facility_id, department))
             connection.commit()
         app = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
         thread = threading.Thread(target=app.serve_forever, daemon=True)
         thread.start()
         try:
-            with patch("server.DATABASE", database), patch("server.authenticated_subject", return_value="user-a"):
+            with patch("server.authenticated_subject", return_value="user-a"):
                 user_records.save_profile("user-a", {"universityId": user_records.MIYAZAKI_UNIVERSITY_ID,
                                                      "grade": "1", "gender": "prefer_not_to_say", "nickname": "ひなた"})
                 for suffix in ("", "&type=pharmacy", "&type=medical", "&" + urlencode({"prefecture": "京都府"})):
@@ -967,17 +1013,18 @@ class UserRecordTests(unittest.TestCase):
                     else:
                         self.assertEqual(response.read(), b"")
                     connection.close()
-                for method in ("GET", "HEAD"):
-                    connection = HTTPConnection("127.0.0.1", server.server_port)
-                    connection.request(method, "/assets/universities/miyazaki-symbol.png")
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 200)
-                    self.assertEqual(response.getheader("Content-Type"), "image/png")
-                    if method == "GET":
-                        self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
-                    else:
-                        self.assertEqual(response.read(), b"")
-                    connection.close()
+                for path in ("/assets/universities/miyazaki-symbol.png", "/assets/icons/mango.png"):
+                    for method in ("GET", "HEAD"):
+                        connection = HTTPConnection("127.0.0.1", server.server_port)
+                        connection.request(method, path)
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200, path)
+                        self.assertEqual(response.getheader("Content-Type"), "image/png")
+                        if method == "GET":
+                            self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
+                        else:
+                            self.assertEqual(response.read(), b"")
+                        connection.close()
         finally:
             server.shutdown()
             server.server_close()
@@ -988,7 +1035,8 @@ class UserRecordTests(unittest.TestCase):
         thread = threading.Thread(target=app.serve_forever, daemon=True)
         thread.start()
         try:
-            for path in ("/", "/index.html", "/app.js?v=old", "/styles.css", "/ui.generated.css"):
+            for path in ("/", "/index.html", "/app.js?v=old", "/styles.css",
+                         "/ui.generated.css", "/assets/icons/mango.png?v=20261024-3"):
                 connection = HTTPConnection("127.0.0.1", app.server_port)
                 connection.request("GET", path)
                 response = connection.getresponse()

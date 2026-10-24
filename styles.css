@@ -123,6 +123,63 @@ main {
   color: var(--muted);
 }
 
+.search-mascot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+.search-mascot img {
+  flex: 0 0 104px;
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+}
+
+.search-mascot--compact {
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.search-mascot--compact img {
+  flex-basis: 72px;
+  width: 72px;
+  height: 72px;
+}
+
+.search-mascot-bubble {
+  position: relative;
+  flex: 1;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid #f0d39b;
+  border-radius: 18px 18px 18px 4px;
+  background: #fff8e9;
+  color: #493a26;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.search-mascot--compact .search-mascot-bubble {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.search-mascot-bubble::before {
+  position: absolute;
+  top: 50%;
+  left: -7px;
+  width: 12px;
+  height: 12px;
+  border-bottom: 1px solid #f0d39b;
+  border-left: 1px solid #f0d39b;
+  background: #fff8e9;
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
 .topbar-brand { min-width: 0; }
 .topbar h1 { overflow-wrap: anywhere; }
 .account-control { position: relative; flex: 0 0 44px; }

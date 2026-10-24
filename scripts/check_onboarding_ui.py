@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from playwright.sync_api import sync_playwright
 import server
 import user_records
+from tests.db_support import isolated_database
 
 
 SDK = """
@@ -99,6 +100,17 @@ def check_auth_redirect(browser, url):
         if scenario == "success":
             assert page.locator("#appContent").is_visible()
             assert page.locator("#loginScreen").is_hidden()
+            mascot = page.locator("#searchForm + .search-mascot img")
+            assert mascot.is_visible()
+            assert mascot.evaluate("image => image.complete && image.naturalWidth > 0")
+            assert mascot.evaluate(
+                "image => image.getBoundingClientRect().top >= "
+                "image.closest('.search-mascot').previousElementSibling.getBoundingClientRect().bottom"
+            )
+            assert page.locator(".search-mascot").count() == 3
+            assert page.locator("#searchForm + .search-mascot").is_visible()
+            assert page.locator("#screen-results .search-mascot").count() == 1
+            assert page.locator("#screen-active .search-mascot").count() == 1
             assert page.evaluate("window.sessionChecks || 0") == 0
             page.add_init_script("window.testLoggedIn = true;")
             page.reload()
@@ -487,7 +499,7 @@ def check_fixed_university_registration(browser, url):
         legacy = {"universityId": "F126310107564", "universityName": "同志社大学",
                   "grade": "4", "gender": "prefer_not_to_say", "nickname": "テスト"}
         with user_records.connect_records() as connection:
-            connection.execute("INSERT INTO profiles VALUES (?, ?)", ("test-user", json.dumps(legacy)))
+            connection.execute("INSERT INTO profiles VALUES (%s, %s)", ("test-user", json.dumps(legacy)))
         context = browser.new_context(viewport={"width": width, "height": 820}, timezone_id="Asia/Tokyo")
         context.route("https://unpkg.com/**", lambda route: route.abort())
         context.route("https://routing.openstreetmap.de/**", lambda route: route.abort())
@@ -550,7 +562,7 @@ def check_fixed_university_registration(browser, url):
         context.close()
         with user_records.connect_records() as connection:
             for table in ("profiles", "visits", "reviews"):
-                connection.execute(f"DELETE FROM {table} WHERE user_id = ?", ("test-user",))
+                connection.execute(f"DELETE FROM {table} WHERE user_id = %s", ("test-user",))
     print("Fixed Miyazaki registration checks passed: legacy profile, search origin, results, publication and email badge")
 
 
@@ -606,7 +618,7 @@ def check_email_badge_sync(browser, url):
         context.close()
         with user_records.connect_records() as connection:
             for table in ("profiles", "visits", "reviews"):
-                connection.execute(f"DELETE FROM {table} WHERE user_id = ?", ("test-user",))
+                connection.execute(f"DELETE FROM {table} WHERE user_id = %s", ("test-user",))
     user_records.save_profile("test-user", {"grade": "4", "gender": "prefer_not_to_say", "nickname": "ひなた"})
     context = browser.new_context(viewport={"width": 320, "height": 820})
     context.route("https://unpkg.com/**", lambda route: route.abort())
@@ -628,7 +640,7 @@ def check_email_badge_sync(browser, url):
     assert page.evaluate("state.emailVerification") is None
     context.close()
     with user_records.connect_records() as connection:
-        connection.execute("DELETE FROM profiles WHERE user_id = ?", ("test-user",))
+        connection.execute("DELETE FROM profiles WHERE user_id = %s", ("test-user",))
     print("Email badge checks passed: Miyazaki, Doshisha, old posts, failure reasons, outage and late logout response")
 
 
@@ -789,9 +801,7 @@ def check_profile_submission(browser, url):
 
 
 def main():
-    with tempfile.TemporaryDirectory() as directory, patch.object(
-        user_records, "RECORDS_DATABASE", Path(directory) / "records.sqlite3"
-    ), patch("server.authenticated_subject", return_value="test-user"), patch(
+    with isolated_database(with_facilities=True), patch("server.authenticated_subject", return_value="test-user"), patch(
         "server.auth_config", return_value={"configured": True, "domain": "test.auth0.com",
                                             "clientId": "test-client", "audience": "test-api"}
     ), patch("server.verified_email_university", return_value="miyazaki"), patch(

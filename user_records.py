@@ -1,15 +1,14 @@
 import json
 import math
 import os
-import sqlite3
 from uuid import uuid4
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 import jwt
 from dotenv import load_dotenv
+from database import connect_database as connect_records, lock_user
 
 
 load_dotenv(Path(__file__).with_name(".env"), override=False)
@@ -17,9 +16,6 @@ load_dotenv(Path(__file__).with_name(".env"), override=False)
 DOMAIN = os.environ.get("AUTH0_DOMAIN", "").strip()
 CLIENT_ID = os.environ.get("AUTH0_CLIENT_ID", "").strip()
 AUDIENCE = os.environ.get("AUTH0_AUDIENCE", "").strip()
-RECORDS_DATABASE = Path(os.environ.get(
-    "RECORDS_DATABASE", str(Path(__file__).parent / "data" / "user-records.sqlite3")
-))
 JWKS_CLIENT = jwt.PyJWKClient(f"https://{DOMAIN}/.well-known/jwks.json") if DOMAIN else None
 UNIVERSITY_DATA = json.loads((Path(__file__).parent / "data" / "universities.json").read_text(encoding="utf-8"))
 UNIVERSITIES = {item["id"]: item for item in UNIVERSITY_DATA["universities"]}
@@ -27,7 +23,7 @@ GRADES = {"1", "2", "3", "4", "5", "6", "master1", "master2", "doctor1", "doctor
 GENDERS = {"female", "male", "other", "prefer_not_to_say"}
 MIYAZAKI_UNIVERSITY_ID = "F145110111523"
 REVIEW_UNIVERSITY_IDS = (MIYAZAKI_UNIVERSITY_ID,)
-REVIEW_UNIVERSITY_PLACEHOLDERS = ",".join("?" for _ in REVIEW_UNIVERSITY_IDS)
+REVIEW_UNIVERSITY_PLACEHOLDERS = ",".join("%s" for _ in REVIEW_UNIVERSITY_IDS)
 VERIFIED_EMAIL_DOMAINS = {
     "student.miyazaki-u.ac.jp": "miyazaki",
     **{f"mail{number}.doshisha.ac.jp": "doshisha" for number in ("", "1", "2", "3", "4")},
@@ -88,13 +84,14 @@ def sync_review_email_badges(subject, university):
         return 0
     updated = 0
     with connect_records() as connection:
-        rows = connection.execute("SELECT visit_id, payload FROM reviews WHERE user_id = ?", (subject,)).fetchall()
+        lock_user(connection, subject)
+        rows = connection.execute("SELECT visit_id, payload FROM reviews WHERE user_id = %s", (subject,)).fetchall()
         for visit_id, payload in rows:
             review = json.loads(payload)
             if review.get("universityEmailVerified") is True and review.get("verifiedEmailUniversity") == university:
                 continue
             review.update(universityEmailVerified=True, verifiedEmailUniversity=university)
-            connection.execute("UPDATE reviews SET payload = ? WHERE user_id = ? AND visit_id = ?",
+            connection.execute("UPDATE reviews SET payload = %s WHERE user_id = %s AND visit_id = %s",
                                (json.dumps(review, ensure_ascii=False), subject, visit_id))
             updated += 1
     return updated
@@ -105,41 +102,12 @@ def visited_month(arrival_at):
     return arrival.astimezone(timezone(timedelta(hours=9))).strftime("%Y-%m")
 
 
-@contextmanager
-def connect_records():
-    RECORDS_DATABASE.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(RECORDS_DATABASE, timeout=10)
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS visits (
-            user_id TEXT NOT NULL, visit_id TEXT NOT NULL, payload TEXT NOT NULL,
-            PRIMARY KEY (user_id, visit_id)
-        )
-    """)
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS profiles (
-            user_id TEXT PRIMARY KEY, payload TEXT NOT NULL
-        )
-    """)
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS reviews (
-            user_id TEXT NOT NULL, visit_id TEXT NOT NULL, hospital_id TEXT NOT NULL,
-            payload TEXT NOT NULL, PRIMARY KEY (user_id, visit_id)
-        )
-    """)
-    connection.execute("CREATE INDEX IF NOT EXISTS reviews_hospital ON reviews (hospital_id)")
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
-
-
 def list_records(subject):
     with connect_records() as connection:
         rows = connection.execute("""
             SELECT v.payload, r.payload FROM visits v
             LEFT JOIN reviews r ON r.user_id = v.user_id AND r.visit_id = v.visit_id
-            WHERE v.user_id = ?
+            WHERE v.user_id = %s
         """, (subject,)).fetchall()
     records = []
     for payload, review_payload in rows:
@@ -157,30 +125,33 @@ def hospital_stay_averages(subject, hospital_ids):
     hospital_ids = list(dict.fromkeys(hospital_ids))
     if not hospital_ids:
         return {}
-    placeholders = ",".join("?" for _ in hospital_ids)
+    placeholders = ",".join("%s" for _ in hospital_ids)
     # Shared durations follow the same publication and university rules as reviews.
     with connect_records() as connection:
         rows = connection.execute(f"""
-            SELECT json_extract(v.payload, '$.hospitalId') AS hospital_id,
-                   AVG(json_extract(v.payload, '$.stayMinutes')), COUNT(*)
-            FROM visits v
-            WHERE json_extract(v.payload, '$.hospitalId') IN ({placeholders})
-              AND json_extract(v.payload, '$.status') = 'completed'
-              AND json_type(v.payload, '$.stayMinutes') IN ('integer', 'real')
-              AND json_extract(v.payload, '$.stayMinutes') > 0
+            WITH durations AS (
+                SELECT user_id, visit_id, payload::jsonb ->> 'hospitalId' AS hospital_id,
+                       payload::jsonb ->> 'status' AS status,
+                       CASE WHEN jsonb_typeof(payload::jsonb -> 'stayMinutes') = 'number'
+                            THEN (payload::jsonb ->> 'stayMinutes')::numeric END AS stay_minutes
+                FROM visits
+            )
+            SELECT v.hospital_id, AVG(v.stay_minutes), COUNT(*) FROM durations v
+            WHERE v.hospital_id IN ({placeholders})
+              AND v.status = 'completed' AND v.stay_minutes > 0
               AND (
-                  v.user_id = ? OR (
+                  v.user_id = %s OR (
                       EXISTS (
                           SELECT 1 FROM profiles viewer
-                          WHERE viewer.user_id = ?
-                            AND json_extract(viewer.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+                          WHERE viewer.user_id = %s
+                            AND viewer.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
                       )
                       AND EXISTS (
                           SELECT 1 FROM reviews r JOIN profiles author ON author.user_id = r.user_id
                           WHERE r.user_id = v.user_id AND r.visit_id = v.visit_id
-                            AND r.hospital_id = json_extract(v.payload, '$.hospitalId')
-                            AND json_type(r.payload, '$.stayMinutes') IN ('integer', 'real')
-                            AND json_extract(author.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+                            AND r.hospital_id = v.hospital_id
+                            AND jsonb_typeof(r.payload::jsonb -> 'stayMinutes') = 'number'
+                            AND author.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
                       )
                   )
               )
@@ -194,17 +165,17 @@ def hospital_fee_averages(subject, hospital_ids):
     hospital_ids = list(dict.fromkeys(hospital_ids))
     if not hospital_ids:
         return {}
-    placeholders = ",".join("?" for _ in hospital_ids)
+    placeholders = ",".join("%s" for _ in hospital_ids)
     with connect_records() as connection:
         rows = connection.execute(f"""
-            SELECT r.hospital_id, json_extract(r.payload, '$.feeAmount')
+            SELECT r.hospital_id, r.payload::jsonb ->> 'feeAmount'
             FROM reviews r
             JOIN profiles author ON author.user_id = r.user_id
-            JOIN profiles viewer ON viewer.user_id = ?
+            JOIN profiles viewer ON viewer.user_id = %s
             WHERE r.hospital_id IN ({placeholders})
-              AND json_extract(author.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
-              AND json_extract(viewer.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
-              AND json_type(r.payload, '$.feeAmount') IN ('integer', 'text')
+              AND author.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+              AND viewer.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+              AND jsonb_typeof(r.payload::jsonb -> 'feeAmount') IN ('number', 'string')
         """, (subject, *hospital_ids, *REVIEW_UNIVERSITY_IDS, *REVIEW_UNIVERSITY_IDS)).fetchall()
     totals = {}
     for hospital_id, fee in rows:
@@ -225,7 +196,7 @@ def hospital_fee_averages(subject, hospital_ids):
 
 def get_profile(subject):
     with connect_records() as connection:
-        row = connection.execute("SELECT payload FROM profiles WHERE user_id = ?", (subject,)).fetchone()
+        row = connection.execute("SELECT payload FROM profiles WHERE user_id = %s", (subject,)).fetchone()
     return json.loads(row[0]) if row else None
 
 
@@ -245,10 +216,10 @@ def save_profile(subject, value, *, require_existing=False):
     profile = {"universityId": university_id, "universityName": UNIVERSITIES[university_id]["name"],
                "grade": grade, "gender": gender, "nickname": nickname.strip()}
     with connect_records() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        if require_existing and not connection.execute("SELECT 1 FROM profiles WHERE user_id = ?", (subject,)).fetchone():
+        lock_user(connection, subject)
+        if require_existing and not connection.execute("SELECT 1 FROM profiles WHERE user_id = %s", (subject,)).fetchone():
             raise ValueError("プロフィールがありません。もう一度ログインしてください。")
-        connection.execute("INSERT INTO profiles (user_id, payload) VALUES (?, ?) "
+        connection.execute("INSERT INTO profiles (user_id, payload) VALUES (%s, %s) "
                            "ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload",
                            (subject, json.dumps(profile, ensure_ascii=False)))
     return profile
@@ -256,9 +227,9 @@ def save_profile(subject, value, *, require_existing=False):
 
 def delete_account(subject):
     with connect_records() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        lock_user(connection, subject)
         for table in ("reviews", "visits", "profiles"):
-            connection.execute(f"DELETE FROM {table} WHERE user_id = ?", (subject,))
+            connection.execute(f"DELETE FROM {table} WHERE user_id = %s", (subject,))
 
 
 def validate_record(value):
@@ -384,15 +355,18 @@ def public_review_payload(record, profile, previous=None, verified_email_univers
 def publish_all_reviews(subject=None):
     updated = 0
     with connect_records() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        if subject is None:
+            connection.execute("LOCK TABLE profiles, visits, reviews IN SHARE ROW EXCLUSIVE MODE")
+        else:
+            lock_user(connection, subject)
         rows = connection.execute(f"""
             SELECT v.user_id, v.visit_id, v.payload, p.payload, r.payload
             FROM visits v JOIN profiles p ON p.user_id = v.user_id
             LEFT JOIN reviews r ON r.user_id = v.user_id AND r.visit_id = v.visit_id
-            WHERE json_extract(p.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
-              AND json_extract(v.payload, '$.status') = 'completed'
-              AND (r.visit_id IS NULL OR COALESCE(json_extract(v.payload, '$.reviewSharing.published'), 0) != 1)
-              AND (? IS NULL OR v.user_id = ?)
+            WHERE p.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+              AND v.payload::jsonb ->> 'status' = 'completed'
+              AND (r.visit_id IS NULL OR COALESCE(v.payload::jsonb #>> '{{reviewSharing,published}}', 'false') <> 'true')
+              AND (%s::text IS NULL OR v.user_id = %s)
         """, (*REVIEW_UNIVERSITY_IDS, subject, subject)).fetchall()
         for owner, visit_id, payload, profile_payload, previous_payload in rows:
             record, profile = json.loads(payload), json.loads(profile_payload)
@@ -409,9 +383,9 @@ def publish_all_reviews(subject=None):
             if not previous_payload:
                 public = public_review_payload(record, profile)
                 public.update(nickname=profile.get("nickname", ""), visitedMonth=visited_month(record["arrivalAt"]))
-                connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (?, ?, ?, ?)",
+                connection.execute("INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (%s, %s, %s, %s)",
                                    (owner, visit_id, record["hospitalId"], json.dumps(public, ensure_ascii=False)))
-            connection.execute("UPDATE visits SET payload = ? WHERE user_id = ? AND visit_id = ?",
+            connection.execute("UPDATE visits SET payload = %s WHERE user_id = %s AND visit_id = %s",
                                (json.dumps(record, ensure_ascii=False), owner, visit_id))
             updated += 1
     return updated
@@ -420,10 +394,10 @@ def publish_all_reviews(subject=None):
 def save_record(subject, value, *, verified_email_university=None):
     record = validate_record(value)
     with connect_records() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        lock_user(connection, subject)
         sharing = record["reviewSharing"]
         if sharing["published"]:
-            profile_row = connection.execute("SELECT payload FROM profiles WHERE user_id = ?", (subject,)).fetchone()
+            profile_row = connection.execute("SELECT payload FROM profiles WHERE user_id = %s", (subject,)).fetchone()
             profile = json.loads(profile_row[0]) if profile_row else {}
             if profile.get("universityId") not in REVIEW_UNIVERSITY_IDS:
                 raise ValueError("口コミの公開は宮崎大学の登録者が利用できます。")
@@ -432,18 +406,18 @@ def save_record(subject, value, *, verified_email_university=None):
                 if not isinstance(nickname, str) or not nickname.strip():
                     raise ValueError("プロフィールでニックネームを登録してください。")
                 record["nickname"] = nickname
-            previous = connection.execute("SELECT payload FROM reviews WHERE user_id = ? AND visit_id = ?",
+            previous = connection.execute("SELECT payload FROM reviews WHERE user_id = %s AND visit_id = %s",
                                           (subject, record["id"])).fetchone()
             public = public_review_payload(record, profile, json.loads(previous[0]) if previous else None,
                                            verified_email_university)
             connection.execute("""
-                INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (?, ?, ?, ?)
+                INSERT INTO reviews (user_id, visit_id, hospital_id, payload) VALUES (%s, %s, %s, %s)
                 ON CONFLICT(user_id, visit_id) DO UPDATE SET hospital_id = excluded.hospital_id, payload = excluded.payload
             """, (subject, record["id"], record["hospitalId"], json.dumps(public, ensure_ascii=False)))
         else:
-            connection.execute("DELETE FROM reviews WHERE user_id = ? AND visit_id = ?", (subject, record["id"]))
+            connection.execute("DELETE FROM reviews WHERE user_id = %s AND visit_id = %s", (subject, record["id"]))
         connection.execute("""
-            INSERT INTO visits (user_id, visit_id, payload) VALUES (?, ?, ?)
+            INSERT INTO visits (user_id, visit_id, payload) VALUES (%s, %s, %s)
             ON CONFLICT(user_id, visit_id) DO UPDATE SET payload = excluded.payload
         """, (subject, record["id"], json.dumps(record, ensure_ascii=False)))
     return record
@@ -454,8 +428,8 @@ def list_reviews(subject, hospital_id):
         rows = connection.execute(f"""
             SELECT r.user_id, r.payload, v.payload FROM reviews r JOIN profiles p ON p.user_id = r.user_id
             LEFT JOIN visits v ON v.user_id = r.user_id AND v.visit_id = r.visit_id
-            WHERE r.hospital_id = ? AND json_extract(p.payload, '$.universityId') IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
-            ORDER BY r.rowid DESC LIMIT 50
+            WHERE r.hospital_id = %s AND p.payload::jsonb ->> 'universityId' IN ({REVIEW_UNIVERSITY_PLACEHOLDERS})
+            ORDER BY r.review_order DESC LIMIT 50
         """, (hospital_id, *REVIEW_UNIVERSITY_IDS)).fetchall()
     reviews = []
     for owner, payload, visit_payload in rows:
@@ -471,13 +445,14 @@ def list_reviews(subject, hospital_id):
 
 def unpublish_review(subject, visit_id):
     with connect_records() as connection:
-        row = connection.execute("SELECT payload FROM visits WHERE user_id = ? AND visit_id = ?",
+        lock_user(connection, subject)
+        row = connection.execute("SELECT payload FROM visits WHERE user_id = %s AND visit_id = %s",
                                  (subject, visit_id)).fetchone()
         if not row:
             raise ValueError("受診記録が見つかりません。")
         record = json.loads(row[0])
         record["reviewSharing"] = {**record.get("reviewSharing", {}), "published": False}
-        connection.execute("DELETE FROM reviews WHERE user_id = ? AND visit_id = ?", (subject, visit_id))
-        connection.execute("UPDATE visits SET payload = ? WHERE user_id = ? AND visit_id = ?",
+        connection.execute("DELETE FROM reviews WHERE user_id = %s AND visit_id = %s", (subject, visit_id))
+        connection.execute("UPDATE visits SET payload = %s WHERE user_id = %s AND visit_id = %s",
                            (json.dumps(record, ensure_ascii=False), subject, visit_id))
     return record

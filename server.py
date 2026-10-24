@@ -2,14 +2,16 @@ import json
 import math
 import mimetypes
 import os
-import sqlite3
-from contextlib import closing
+from functools import wraps
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.error import URLError
 
 import jwt
+import psycopg
+from psycopg.rows import dict_row
+from database import connect_database, initialize_database
 from user_records import (auth_config, authenticated_subject, list_records, save_record,
                           get_profile, save_profile, delete_account, MIYAZAKI_UNIVERSITY_ID,
                           list_reviews, verified_email_university, validate_record, publish_all_reviews,
@@ -19,12 +21,12 @@ from university_locations import resolve_university_location
 
 
 ROOT = Path(__file__).resolve().parent
-DATABASE = ROOT / "data" / "facilities.sqlite3"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 PUBLIC_FILES = {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css",
                 "/assets/icons/log-out.svg", "/assets/icons/settings.svg", "/assets/icons/trash-2.svg",
-                "/assets/icons/arrow-left.svg", "/assets/universities/miyazaki-symbol.png"}
+                "/assets/icons/arrow-left.svg", "/assets/icons/mango.png",
+                "/assets/universities/miyazaki-symbol.png"}
 
 
 def haversine(latitude, longitude, target_latitude, target_longitude):
@@ -40,15 +42,28 @@ def haversine(latitude, longitude, target_latitude, target_longitude):
     return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
 
 
+def database_errors(handler):
+    @wraps(handler)
+    def wrapped(self):
+        try:
+            return handler(self)
+        except psycopg.Error:
+            self.log_error("PostgreSQL request failed")
+            self.send_json({"error": "データベースに接続できません。接続設定とデータの移行を確認してください。"}, 503)
+    return wrapped
+
+
 class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def end_headers(self):
-        if urlparse(self.path).path in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css"}:
+        if urlparse(self.path).path in {"/", "/index.html", "/app.js", "/styles.css",
+                                        "/ui.generated.css", "/assets/icons/mango.png"}:
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
+    @database_errors
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/auth-config":
@@ -143,6 +158,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return None
         return subject
 
+    @database_errors
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/email-verification":
@@ -187,6 +203,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         self.send_json({"profile" if path == "/api/profile" else "visit": record}, 201)
 
+    @database_errors
     def do_PUT(self):
         if urlparse(self.path).path != "/api/profile":
             self.send_json({"error": "Not found"}, 404)
@@ -203,11 +220,12 @@ class AppHandler(SimpleHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
             return
-        except sqlite3.Error:
+        except psycopg.Error:
             self.send_json({"error": "プロフィールを保存できませんでした。時間をおいて再度お試しください。"}, 503)
             return
         self.send_json({"profile": profile})
 
+    @database_errors
     def do_DELETE(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/account":
@@ -225,7 +243,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError) as error:
                 self.send_json({"error": str(error)}, 400)
                 return
-            except sqlite3.Error:
+            except psycopg.Error:
                 self.send_json({"error": "退会できませんでした。時間をおいて再度お試しください。"}, 503)
                 return
             self.send_json({"deleted": True})
@@ -249,10 +267,6 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "検索条件が正しくありません"}, 400)
             return
 
-        if not DATABASE.exists():
-            self.send_json({"error": "施設DBがありません。生成スクリプトを実行してください"}, 503)
-            return
-
         latitude_delta = radius / 111.0
         longitude_scale = max(0.1, math.cos(math.radians(latitude)))
         longitude_delta = radius / (111.0 * longitude_scale)
@@ -261,6 +275,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             latitude + latitude_delta,
             longitude - longitude_delta,
             longitude + longitude_delta,
+            "宮崎県%",
         ]
         parameters.append(department)
 
@@ -268,22 +283,25 @@ class AppHandler(SimpleHTTPRequestHandler):
             SELECT
                 f.id, f.type, f.name, f.address, f.latitude, f.longitude,
                 f.website, f.open, f.median_wait,
-                (SELECT GROUP_CONCAT(fd.department)
+                (SELECT STRING_AGG(fd.department, ',' ORDER BY fd.department)
                  FROM facility_departments fd WHERE fd.facility_id = f.id) AS departments
             FROM facilities f
-            WHERE f.latitude BETWEEN ? AND ?
-              AND f.longitude BETWEEN ? AND ?
-              AND f.address LIKE '宮崎県%'
+            WHERE f.latitude BETWEEN %s AND %s
+              AND f.longitude BETWEEN %s AND %s
+              AND f.address LIKE %s
               AND f.type IN ('hospital', 'clinic')
               AND EXISTS (
                   SELECT 1 FROM facility_departments fd
-                  WHERE fd.facility_id = f.id AND fd.department = ?
+                  WHERE fd.facility_id = f.id AND fd.department = %s
               )
         """
 
-        with closing(sqlite3.connect(DATABASE)) as connection:
-            connection.row_factory = sqlite3.Row
-            candidates = connection.execute(sql, parameters).fetchall()
+        with connect_database() as connection:
+            if not connection.execute("SELECT EXISTS (SELECT 1 FROM facilities)").fetchone()[0]:
+                self.send_json({"error": "病院データが未登録です。PostgreSQLへの移行を実行してください。"}, 503)
+                return
+            with connection.cursor(row_factory=dict_row) as cursor:
+                candidates = cursor.execute(sql, parameters).fetchall()
 
         results = []
         for row in candidates:
@@ -335,6 +353,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     mimetypes.add_type("application/javascript", ".js")
+    try:
+        initialize_database()
+    except psycopg.Error:
+        raise SystemExit("PostgreSQLへの接続に失敗しました。DATABASE_URLとDBの起動状態を確認してください。") from None
     print(f"Published historical reviews: {publish_all_reviews()}")
     print(f"Campus Clinic Finder: http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST, PORT), AppHandler).serve_forever()

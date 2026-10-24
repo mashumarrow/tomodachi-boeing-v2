@@ -29,15 +29,13 @@ def resolve_university_location(university_id):
 
     with LOOKUP_LOCK:
         with connect_records() as connection:
-            connection.execute("CREATE TABLE IF NOT EXISTS university_locations "
-                               "(school_id TEXT PRIMARY KEY, address TEXT NOT NULL, payload TEXT NOT NULL)")
-            row = connection.execute("SELECT payload FROM university_locations WHERE school_id = ? AND address = ?",
+            row = connection.execute("SELECT payload FROM university_locations WHERE school_id = %s AND address = %s",
                                      (university_id, university["address"])).fetchone()
         if row:
             return json.loads(row[0])
         location = lookup_address(university)
         with connect_records() as connection:
-            connection.execute("INSERT INTO university_locations (school_id, address, payload) VALUES (?, ?, ?) "
+            connection.execute("INSERT INTO university_locations (school_id, address, payload) VALUES (%s, %s, %s) "
                                "ON CONFLICT(school_id) DO UPDATE SET address = excluded.address, payload = excluded.payload",
                                (university_id, university["address"], json.dumps(location, ensure_ascii=False)))
         return location
