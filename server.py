@@ -11,7 +11,7 @@ from urllib.error import URLError
 
 import jwt
 from user_records import (auth_config, authenticated_subject, list_records, save_record,
-                          get_profile, save_profile, MIYAZAKI_UNIVERSITY_ID,
+                          get_profile, save_profile, delete_account, MIYAZAKI_UNIVERSITY_ID,
                           list_reviews, verified_email_university, validate_record, publish_all_reviews,
                           email_verification_status, sync_review_email_badges,
                           hospital_stay_averages, hospital_fee_averages)
@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parent
 DATABASE = ROOT / "data" / "facilities.sqlite3"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
+PUBLIC_FILES = {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css",
+                "/assets/icons/log-out.svg", "/assets/icons/settings.svg", "/assets/icons/trash-2.svg",
+                "/assets/icons/arrow-left.svg", "/assets/universities/miyazaki-symbol.png"}
 
 
 def haversine(latitude, longitude, target_latitude, target_longitude):
@@ -87,13 +90,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             if subject:
                 self.send_json({"profile": get_profile(subject)})
             return
-        if parsed.path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg", "/assets/universities/miyazaki-symbol.png"}:
+        if parsed.path not in PUBLIC_FILES:
             self.send_json({"error": "Not found"}, 404)
             return
         super().do_GET()
 
     def do_HEAD(self):
-        if urlparse(self.path).path not in {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css", "/assets/icons/log-out.svg", "/assets/universities/miyazaki-symbol.png"}:
+        if urlparse(self.path).path not in PUBLIC_FILES:
             self.send_error(404)
             return
         super().do_HEAD()
@@ -184,8 +187,49 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         self.send_json({"profile" if path == "/api/profile" else "visit": record}, 201)
 
+    def do_PUT(self):
+        if urlparse(self.path).path != "/api/profile":
+            self.send_json({"error": "Not found"}, 404)
+            return
+        subject = self.require_member()
+        if not subject:
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 16384:
+                raise ValueError("プロフィールのサイズが正しくありません。")
+            value = json.loads(self.rfile.read(length))
+            profile = save_profile(subject, value, require_existing=True)
+        except (ValueError, UnicodeDecodeError) as error:
+            self.send_json({"error": str(error)}, 400)
+            return
+        except sqlite3.Error:
+            self.send_json({"error": "プロフィールを保存できませんでした。時間をおいて再度お試しください。"}, 503)
+            return
+        self.send_json({"profile": profile})
+
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/account":
+            subject = self.require_user()
+            if not subject:
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError("退会の確認が必要です。")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict) or payload.get("confirmation") != "delete-account":
+                    raise ValueError("退会の確認が必要です。")
+                delete_account(subject)
+            except (ValueError, UnicodeDecodeError) as error:
+                self.send_json({"error": str(error)}, 400)
+                return
+            except sqlite3.Error:
+                self.send_json({"error": "退会できませんでした。時間をおいて再度お試しください。"}, 503)
+                return
+            self.send_json({"deleted": True})
+            return
         if parsed.path != "/api/reviews":
             self.send_json({"error": "Not found"}, 404)
             return

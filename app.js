@@ -46,6 +46,9 @@ const state = {
   authClient: null,
   authReady: false,
   loggingOut: false,
+  savingSettings: false,
+  deletingAccount: false,
+  settingsReturnScreen: "search",
   user: null,
   emailVerification: null,
   emailVerificationCheckedAt: 0,
@@ -88,7 +91,10 @@ function setAccountMenu(open, restoreFocus = false) {
 
 function updateAccessScreen() {
   const canEnter = Boolean(
-    state.authReady && state.user && state.profile?.nickname?.trim() && canShareReviews(),
+    state.authReady &&
+    state.user &&
+    state.profile?.nickname?.trim() &&
+    canShareReviews(),
   );
   $("#appContent").hidden = !canEnter;
   $("#loginScreen").hidden = !state.authReady || Boolean(state.user);
@@ -111,7 +117,8 @@ function updateAccessScreen() {
     if (!picture) avatar.removeAttribute("src");
     avatar.hidden = !picture || (avatar.complete && avatar.naturalWidth === 0);
     $("#accountInitial").hidden = !avatar.hidden;
-    $("#searchOrigin").textContent = state.universityLocation?.label || "宮崎大学";
+    $("#searchOrigin").textContent =
+      state.universityLocation?.label || "宮崎大学";
   } else {
     setAccountMenu(false);
     $("#accountNickname").textContent = "";
@@ -147,39 +154,139 @@ async function enterApplication() {
   void refreshEmailVerification();
 }
 
+function openAccountSettings() {
+  if (
+    !state.user ||
+    !state.profile ||
+    state.savingSettings ||
+    state.deletingAccount
+  )
+    return;
+  const currentScreen = $(".screen.active")?.id.replace("screen-", "");
+  if (currentScreen !== "settings")
+    state.settingsReturnScreen = currentScreen || "search";
+  for (const field of ["Grade", "Gender"]) {
+    $(`#settings${field}`).replaceChildren(
+      ...Array.from($(`#profile${field}`).options, (option) =>
+        option.cloneNode(true),
+      ),
+    );
+    $(`#settings${field}`).value = state.profile[field.toLowerCase()];
+  }
+  $("#settingsNickname").value = state.profile.nickname;
+  $("#settingsNickname").setCustomValidity("");
+  $("#settingsStatus").textContent = "";
+  $("#settingsStatus").dataset.error = "false";
+  navigate("settings");
+  $("#settingsTitle").focus({ preventScroll: true });
+}
+
+async function saveAccountSettings(event) {
+  event.preventDefault();
+  const subject = state.user?.sub;
+  if (!subject || state.savingSettings || state.deletingAccount) return;
+  const form = event.target;
+  $("#settingsNickname").setCustomValidity(
+    $("#settingsNickname").value.trim()
+      ? ""
+      : "ニックネームを入力してください。",
+  );
+  if (!form.reportValidity()) return;
+  const value = {
+    nickname: $("#settingsNickname").value.trim(),
+    grade: $("#settingsGrade").value,
+    gender: $("#settingsGender").value,
+  };
+  state.savingSettings = true;
+  $("#settingsFields").disabled = true;
+  $("#settingsSaveButton").disabled = true;
+  $("#withdrawButton").disabled = true;
+  $("#settingsSaveButton").textContent = "保存中...";
+  $("#settingsStatus").textContent = "";
+  form.setAttribute("aria-busy", "true");
+  try {
+    const data = await authorizedFetch("/api/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    if (state.user?.sub !== subject) return;
+    if (!data.profile?.nickname?.trim())
+      throw new Error("プロフィールを保存できませんでした。");
+    state.profile = data.profile;
+    updateAccessScreen();
+    $("#settingsStatus").dataset.error = "false";
+    $("#settingsStatus").textContent = "変更を保存しました。";
+  } catch (error) {
+    if (state.user?.sub !== subject) return;
+    $("#settingsStatus").dataset.error = "true";
+    $("#settingsStatus").textContent = error.message;
+    if ($("#appContent").hidden)
+      $("#accountStatus").textContent = error.message;
+  } finally {
+    if (state.user?.sub === subject) {
+      state.savingSettings = false;
+      $("#settingsFields").disabled = false;
+      $("#settingsSaveButton").disabled = false;
+      $("#withdrawButton").disabled = false;
+      $("#settingsSaveButton").textContent = "変更を保存";
+      form.removeAttribute("aria-busy");
+    }
+  }
+}
+
 function renderEmailVerificationStatus() {
   const status = state.user ? state.emailVerification : null;
-  const labels = new Map([["miyazaki", "宮崎大学"], ["doshisha", "同志社大学"]]);
+  const labels = new Map([
+    ["miyazaki", "宮崎大学"],
+    ["doshisha", "同志社大学"],
+  ]);
   const university = labels.get(status?.verifiedEmailUniversity);
   const verified = status?.universityEmailVerified === true && university;
   $("#accountEmailBadge").hidden = !verified;
-  $("#accountEmailBadge").textContent = verified ? `${university}メール認証済み` : "";
+  $("#accountEmailBadge").textContent = verified
+    ? `${university}メール認証済み`
+    : "";
   const messages = {
     checking: "大学メールを確認中です。",
-    email_unverified: "メールアドレスが未確認です。確認メールのリンクを開き、再ログインしてください。",
+    email_unverified:
+      "メールアドレスが未確認です。確認メールのリンクを開き、再ログインしてください。",
     unsupported_domain: "このメールドメインは認証バッジの対象外です。",
     missing_email: "メール情報を取得できませんでした。再ログインしてください。",
-    identity_mismatch: "メールの本人確認ができませんでした。再ログインしてください。",
-    error: "大学メールの確認に失敗しました。アカウント欄を開き直すと再確認します。",
+    identity_mismatch:
+      "メールの本人確認ができませんでした。再ログインしてください。",
+    error:
+      "大学メールの確認に失敗しました。アカウント欄を開き直すと再確認します。",
   };
-  $("#accountEmailStatus").textContent = verified ? "" : messages[status?.status] || "";
+  $("#accountEmailStatus").textContent = verified
+    ? ""
+    : messages[status?.status] || "";
 }
 
 async function refreshEmailVerification() {
-  if (!state.user || state.emailVerification?.status === "checking"
-      || Date.now() - state.emailVerificationCheckedAt < 30000) return;
+  if (
+    !state.user ||
+    state.emailVerification?.status === "checking" ||
+    Date.now() - state.emailVerificationCheckedAt < 30000
+  )
+    return;
   const subject = state.user.sub;
   state.emailVerification = { status: "checking" };
   renderEmailVerificationStatus();
   try {
-    let data = await authorizedFetch("/api/email-verification", { method: "POST" });
+    let data = await authorizedFetch("/api/email-verification", {
+      method: "POST",
+    });
     if (data.status === "missing_email") {
       await state.authClient.getTokenSilently({ cacheMode: "off" });
-      data = await authorizedFetch("/api/email-verification", { method: "POST" });
+      data = await authorizedFetch("/api/email-verification", {
+        method: "POST",
+      });
     }
     if (state.user?.sub !== subject) return;
     state.emailVerification = data;
     state.emailVerificationCheckedAt = Date.now();
+    renderCalendar();
     if (data.updatedReviews > 0) {
       state.reviewFeeds.clear();
       if (state.selectedHospital && $("#hospitalReviews")) {
@@ -328,7 +435,8 @@ async function initializeAuth() {
         state.user.name || state.user.email || "ログイン中";
       const data = await authorizedFetch("/api/profile");
       state.profile = data.profile;
-      if (state.profile?.nickname?.trim() && canShareReviews()) await enterApplication();
+      if (state.profile?.nickname?.trim() && canShareReviews())
+        await enterApplication();
       else await openProfileRegistration();
     } else {
       $("#accountStatus").textContent = "";
@@ -376,7 +484,10 @@ function formatCurrency(value) {
 }
 
 function feeEstimate(hospital) {
-  if (!Number.isFinite(hospital.averageFeeAmount) || hospital.averageFeeAmount < 0)
+  if (
+    !Number.isFinite(hospital.averageFeeAmount) ||
+    hospital.averageFeeAmount < 0
+  )
     return "データなし";
   return `平均 ${formatCurrency(hospital.averageFeeAmount)}`;
 }
@@ -569,9 +680,11 @@ async function loadNearbyFacilities() {
 function evaluateHospital(hospital) {
   const context = getSearchContext();
   const travel = getTravelDurations(hospital);
-  const stay = Number.isFinite(hospital.averageStayMinutes) && hospital.averageStayMinutes > 0
-    ? hospital.averageStayMinutes
-    : hospital.medianWait;
+  const stay =
+    Number.isFinite(hospital.averageStayMinutes) &&
+    hospital.averageStayMinutes > 0
+      ? hospital.averageStayMinutes
+      : hospital.medianWait;
   const total = travel.outbound + travel.inbound + stay;
   const returnAt = context.start + total;
   const remaining = context.returnBy - context.start - total;
@@ -618,7 +731,7 @@ function matchingHospitals() {
     })
     .map((hospital) => ({ hospital, estimate: evaluateHospital(hospital) }))
     .sort((a, b) => b.estimate.remaining - a.estimate.remaining)
-    .slice(0, 15);
+    .slice(0, 1000);
 }
 
 function createMapPopup(hospital, estimate) {
@@ -995,12 +1108,12 @@ function updateReviewValidation() {
   const visit = state.activeVisit;
   const sharing = visit.reviewSharing || {};
   $("#visitType").setCustomValidity(
-    visit.visitType === "未入力"
-      ? "初診・再診を選択してください。"
-      : "",
+    visit.visitType === "未入力" ? "初診・再診を選択してください。" : "",
   );
   $("#reservationStatus").setCustomValidity(
-    visit.reservationStatus === "未入力" ? "予約の有無を選択してください。" : "",
+    visit.reservationStatus === "未入力"
+      ? "予約の有無を選択してください。"
+      : "",
   );
   $("[data-positive-point]").setCustomValidity(
     !visit.positivePoints.length
@@ -1040,9 +1153,17 @@ function synchronizeManualTimes(requireLeave = false) {
   const error = $("#manualTimeError");
   const output = $("#manualStayMinutes");
   // Keep button timestamps at full precision until their displayed values change.
-  const arrivalAt = new Date(arrivalValue === toDatetimeLocal(visit.arrivalAt) ? visit.arrivalAt : arrivalValue);
+  const arrivalAt = new Date(
+    arrivalValue === toDatetimeLocal(visit.arrivalAt)
+      ? visit.arrivalAt
+      : arrivalValue,
+  );
   const leaveAt = leaveValue
-    ? new Date(leaveValue === toDatetimeLocal(visit.leaveAt) ? visit.leaveAt : leaveValue)
+    ? new Date(
+        leaveValue === toDatetimeLocal(visit.leaveAt)
+          ? visit.leaveAt
+          : leaveValue,
+      )
     : null;
   const invalid = (message) => {
     error.textContent = message;
@@ -1050,13 +1171,23 @@ function synchronizeManualTimes(requireLeave = false) {
     return false;
   };
 
-  if (!arrivalValue || !arrivalInput.validity.valid || Number.isNaN(arrivalAt.getTime())) {
+  if (
+    !arrivalValue ||
+    !arrivalInput.validity.valid ||
+    Number.isNaN(arrivalAt.getTime())
+  ) {
     return invalid("到着日時を入力してください。");
   }
-  if (leaveValue && (!leaveInput.validity.valid || Number.isNaN(leaveAt.getTime()) || leaveAt < arrivalAt)) {
+  if (
+    leaveValue &&
+    (!leaveInput.validity.valid ||
+      Number.isNaN(leaveAt.getTime()) ||
+      leaveAt < arrivalAt)
+  ) {
     return invalid("終了日時は到着日時より後にしてください。");
   }
-  if (requireLeave && !leaveAt) return invalid("受診終了日時を入力してください。");
+  if (requireLeave && !leaveAt)
+    return invalid("受診終了日時を入力してください。");
 
   if ($("#completionForm")) readCompletionDraft();
   const arrivalIso = arrivalAt.toISOString();
@@ -1160,6 +1291,7 @@ function navigate(screen) {
     updateAccessScreen();
     return;
   }
+  $(".tabbar").hidden = screen === "settings";
   document
     .querySelectorAll(".screen")
     .forEach((item) => item.classList.remove("active"));
@@ -1257,30 +1389,19 @@ function renderRecordView() {
   });
 }
 
-function visitRecordMarkup(visit, showDate = false) {
-  const visitDate = new Date(visit.arrivalAt || visit.plannedAt);
-  const duration = visit.stayMinutes || stayMinutes(visit);
+function visitRecordMarkup(visit) {
+  const post = {
+    ...visit,
+    visitedMonth: reviewMonth(visit.arrivalAt || visit.plannedAt),
+    stayMinutes: visit.stayMinutes || stayMinutes(visit),
+  };
   return `
-    <article class="personal-record">
-      <header>
-        <div>
-          ${showDate ? `<time class="record-date" datetime="${dateKey(visitDate)}">${formatDate(visitDate)}</time>` : ""}
-          <span class="department-label">${departments[visit.department] || "診療科未設定"}</span>
-          <h4>${escapeHtml(visit.hospitalName)}</h4>
-        </div>
-        <strong class="stay-time">${duration}<small>分</small></strong>
-      </header>
-      <dl>
-        <div><dt>受診時間</dt><dd>${formatTime(visit.arrivalAt)}〜${formatTime(visit.leaveAt)}</dd></div>
-        <div><dt>費用</dt><dd>${visit.feeAmount ? formatCurrency(Number(visit.feeAmount)) : "未入力"}</dd></div>
-        <div><dt>予約</dt><dd>${visit.reservationStatus}</dd></div>
-        ${visit.visitType && visit.visitType !== "未入力" ? `<div><dt>受診区分</dt><dd>${escapeHtml(visit.visitType)}</dd></div>` : ""}
-        <div><dt>待ち時間</dt><dd>${visit.waitingMinutes != null ? `${Number(visit.waitingMinutes)}分` : escapeHtml(visit.waitingImpression)}</dd></div>
-      </dl>
-      ${reviewTextMarkup(visit)}
-      <div class="record-sharing">
-        <span>${visit.reviewSharing?.published ? "口コミを公開中" : "自分だけの記録"}</span>
+    <article class="personal-record community-card review-own">
+      <div class="record-hospital">
+        <h4>${escapeHtml(visit.hospitalName)}</h4>
+        <span class="department-label">${escapeHtml(departments[visit.department] || "診療科未設定")}</span>
       </div>
+      ${reviewContentMarkup(post, { showAuthor: false })}
     </article>
   `;
 }
@@ -1303,7 +1424,7 @@ function renderMonthDetails(visits, year, month) {
         new Date(b.arrivalAt || b.plannedAt) -
         new Date(a.arrivalAt || a.plannedAt),
     )
-    .map((visit) => visitRecordMarkup(visit, true))
+    .map((visit) => visitRecordMarkup(visit))
     .join("");
 }
 
@@ -1390,32 +1511,48 @@ function reviewVerificationBadge(post) {
   return `<span class="review-verified review-university-badge" role="img" aria-label="${label}" title="${description}"><img src="assets/universities/miyazaki-symbol.png" alt="" width="24" height="24" /><span class="review-verification-label" aria-hidden="true">認証済み</span></span>`;
 }
 
-function reviewContentMarkup(post) {
+function reviewContentMarkup(post, { showAuthor = true } = {}) {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(post.visitedMonth || "")
     ? `${post.visitedMonth.slice(0, 4)}年${Number(post.visitedMonth.slice(5))}月`
     : "";
-  const nickname = String(post.nickname || (post.privateRecord ? "自分の記録" : "宮大生"));
-  const conditions = [post.visitType, post.reservationStatus]
-    .filter((value) => value && value !== "未入力");
+  const nickname = String(
+    post.nickname || (post.privateRecord ? "自分の記録" : "宮大生"),
+  );
+  const conditions = [post.visitType, post.reservationStatus].filter(
+    (value) => value && value !== "未入力",
+  );
   const metrics = [
-    post.waitingMinutes != null ? `<div><dt>待ち時間</dt><dd>${Number(post.waitingMinutes)}<small>分</small></dd></div>` : "",
-    post.stayMinutes != null ? `<div><dt>院内滞在</dt><dd>${Number(post.stayMinutes)}<small>分</small></dd></div>` : "",
-    post.feeAmount != null && post.feeAmount !== "" ? `<div><dt>費用</dt><dd>${formatCurrency(Number(post.feeAmount))}</dd></div>` : "",
+    post.waitingMinutes != null
+      ? `<div><dt>待ち時間</dt><dd>${Number(post.waitingMinutes)}<small>分</small></dd></div>`
+      : "",
+    post.stayMinutes != null
+      ? `<div><dt>院内滞在</dt><dd>${Number(post.stayMinutes)}<small>分</small></dd></div>`
+      : "",
+    post.feeAmount != null && post.feeAmount !== ""
+      ? `<div><dt>費用</dt><dd>${formatCurrency(Number(post.feeAmount))}</dd></div>`
+      : "",
   ].filter(Boolean);
   const points = post.positivePoints || [];
   const text = reviewTextMarkup(post, false);
   const visitTimes = reviewVisitTimesMarkup(post);
   const verificationBadge = reviewVerificationBadge(post);
-  const monthMarkup = month && !visitTimes ? `<div class="review-month"><time datetime="${escapeHtml(post.visitedMonth)}" aria-label="受診した月">${month}</time></div>` : "";
+  const monthMarkup =
+    month && !visitTimes
+      ? `<div class="review-month"><time datetime="${escapeHtml(post.visitedMonth)}" aria-label="受診した月">${month}</time></div>`
+      : "";
   return `
-    <header class="community-card-header">
+    ${
+      showAuthor
+        ? `<header class="community-card-header">
       <span class="review-avatar ${post.isOwnRecord ? "review-avatar-own" : ""}" aria-hidden="true">${escapeHtml(Array.from(nickname)[0])}</span>
       <div class="review-author">
         <strong>${escapeHtml(nickname)}</strong>
         ${post.gradeLabel || post.gradeBand ? `<span>${escapeHtml(post.gradeLabel || post.gradeBand)}</span>` : ""}
       </div>
       ${verificationBadge || monthMarkup ? `<div class="review-header-meta">${verificationBadge}${monthMarkup}</div>` : ""}
-    </header>
+    </header>`
+        : monthMarkup
+    }
     ${visitTimes}
     ${conditions.length || points.length ? `<ul class="review-point-list review-tags" aria-label="受診条件とよかった点">${conditions.map((value) => `<li class="review-condition">${escapeHtml(value)}</li>`).join("")}${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
     ${text.trim() ? `<div class="review-body">${text}</div>` : ""}
@@ -1427,12 +1564,23 @@ function reviewVisitTimesMarkup(post) {
   if (!post.arrivalAt || !post.leaveAt) return "";
   const arrival = new Date(post.arrivalAt);
   const leave = new Date(post.leaveAt);
-  if (!Number.isFinite(arrival.getTime()) || !Number.isFinite(leave.getTime()) || leave < arrival) return "";
+  if (
+    !Number.isFinite(arrival.getTime()) ||
+    !Number.isFinite(leave.getTime()) ||
+    leave < arrival
+  )
+    return "";
   const dateFormat = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo", year: "numeric", month: "long", day: "numeric",
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
   const timeFormat = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    timeZone: "Asia/Tokyo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
   });
   const arrivalDate = dateFormat.format(arrival);
   const leaveDate = dateFormat.format(leave);
@@ -1454,7 +1602,6 @@ function renderReviewCards(hospital) {
           .map(
             (post) => `
     <article class="community-card ${post.privateRecord ? "review-private" : post.isOwnRecord ? "review-own" : ""}">
-      <span class="review-visibility">${post.privateRecord ? "自分の記録・非公開" : post.isOwnRecord ? "自分の口コミ・公開中" : "宮大生の口コミ"}</span>
       ${reviewContentMarkup(post)}
     </article>
   `,
@@ -1509,16 +1656,44 @@ function saveActiveVisit() {
 }
 
 function bindEvents() {
-  $("#accountButton").addEventListener("click", () => setAccountMenu($("#accountMenu").hidden));
+  $("#settingsButton").addEventListener("click", openAccountSettings);
+  $("#settingsBackButton").addEventListener("click", () =>
+    navigate(state.settingsReturnScreen),
+  );
+  $("#settingsForm").addEventListener("submit", saveAccountSettings);
+  $("#settingsNickname").addEventListener("input", () =>
+    $("#settingsNickname").setCustomValidity(""),
+  );
+  $("#withdrawButton").addEventListener("click", () => {
+    if (!state.user || state.savingSettings || state.deletingAccount) return;
+    $("#deleteAccountForm").reset();
+    $("#deleteAccountStatus").textContent = "";
+    $("#confirmDeleteAccount").disabled = true;
+    $("#deleteAccountDialog").showModal();
+  });
+  $("#cancelDeleteAccount").addEventListener("click", () =>
+    $("#deleteAccountDialog").close(),
+  );
+  $("#deleteAccountDialog").addEventListener("cancel", (event) => {
+    if (state.deletingAccount) event.preventDefault();
+  });
+  $("#deleteAccountConfirmed").addEventListener("change", (event) => {
+    $("#confirmDeleteAccount").disabled =
+      !event.target.checked || state.deletingAccount;
+  });
+  $("#accountButton").addEventListener("click", () =>
+    setAccountMenu($("#accountMenu").hidden),
+  );
   $("#accountButton").addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       setAccountMenu(true);
-      $("#logoutButton").focus();
+      $("#settingsButton").focus();
     }
   });
   $("#accountControl").addEventListener("focusout", (event) => {
-    if (!event.currentTarget.contains(event.relatedTarget)) setAccountMenu(false);
+    if (!event.currentTarget.contains(event.relatedTarget))
+      setAccountMenu(false);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !$("#accountMenu").hidden) {
@@ -1539,7 +1714,10 @@ function bindEvents() {
     if (!state.authClient || state.loggingOut) return;
     try {
       await state.authClient.loginWithRedirect({
-        authorizationParams: { screen_hint: "signup", ...(explicitlySignedOut() ? { prompt: "login" } : {}) },
+        authorizationParams: {
+          screen_hint: "signup",
+          ...(explicitlySignedOut() ? { prompt: "login" } : {}),
+        },
       });
     } catch (error) {
       $("#accountStatus").textContent = error.message;
@@ -1611,9 +1789,11 @@ function bindEvents() {
   $("#loginButton").addEventListener("click", async () => {
     if (!state.authClient || state.loggingOut) return;
     try {
-      await state.authClient.loginWithRedirect(explicitlySignedOut()
-        ? { authorizationParams: { prompt: "login" } }
-        : undefined);
+      await state.authClient.loginWithRedirect(
+        explicitlySignedOut()
+          ? { authorizationParams: { prompt: "login" } }
+          : undefined,
+      );
     } catch (error) {
       $("#accountStatus").textContent = error.message;
     }
@@ -1621,6 +1801,7 @@ function bindEvents() {
   const logout = async () => {
     if (state.loggingOut) return;
     state.loggingOut = true;
+    if (state.profile) navigate("search");
     rememberSignedOut(true);
     const client = state.authClient;
     state.user = null;
@@ -1632,16 +1813,21 @@ function bindEvents() {
     state.reviewFeeds.clear();
     state.activeVisit = null;
     state.selectedHospital = null;
+    state.savingSettings = false;
+    state.deletingAccount = false;
+    $("#deleteAccountDialog").close();
     $("#accountStatus").textContent = "";
     updateAccessScreen();
     $("#loginButton").disabled = true;
     $("#signupButton").disabled = true;
     try {
-      if (client) await client.logout({
-        logoutParams: { returnTo: `${location.origin}/` },
-      });
+      if (client)
+        await client.logout({
+          logoutParams: { returnTo: `${location.origin}/` },
+        });
     } catch {
-      $("#accountStatus").textContent = "アプリからログアウトしました。Auth0との通信を完了できなかったため、次回ログイン時は認証し直してください。";
+      $("#accountStatus").textContent =
+        "アプリからログアウトしました。Auth0との通信を完了できなかったため、次回ログイン時は認証し直してください。";
     } finally {
       state.loggingOut = false;
       $("#loginButton").disabled = !client;
@@ -1652,10 +1838,68 @@ function bindEvents() {
       if (state.resultMap) state.resultMap.remove();
       state.resultMap = null;
       state.resultMapBounds = null;
-      document.querySelectorAll("#detail, #results, #activeVisit, #monthDetails, #dayDetails, #monthlySummary, #calendar").forEach((element) => element.replaceChildren());
+      document
+        .querySelectorAll(
+          "#detail, #results, #activeVisit, #monthDetails, #dayDetails, #monthlySummary, #calendar",
+        )
+        .forEach((element) => element.replaceChildren());
       $("#profileForm").reset();
+      $("#settingsForm").reset();
+      $("#settingsForm").removeAttribute("aria-busy");
+      $("#settingsFields").disabled = false;
+      $("#settingsSaveButton").disabled = false;
+      $("#settingsSaveButton").textContent = "変更を保存";
+      $("#settingsStatus").textContent = "";
+      $("#withdrawButton").disabled = false;
     }
   };
+  $("#deleteAccountForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const subject = state.user?.sub;
+    if (
+      !subject ||
+      state.savingSettings ||
+      state.deletingAccount ||
+      !$("#deleteAccountConfirmed").checked
+    )
+      return;
+    state.deletingAccount = true;
+    $("#deleteAccountStatus").textContent = "";
+    $("#confirmDeleteAccount").disabled = true;
+    $("#cancelDeleteAccount").disabled = true;
+    $("#deleteAccountConfirmed").disabled = true;
+    $("#confirmDeleteAccount").textContent = "削除中...";
+    event.target.setAttribute("aria-busy", "true");
+    try {
+      const data = await authorizedFetch("/api/account", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: "delete-account" }),
+      });
+      if (state.user?.sub !== subject) return;
+      if (data.deleted !== true)
+        throw new Error("退会を完了できませんでした。もう一度お試しください。");
+      try {
+        localStorage.removeItem(activeVisitStorageKey());
+      } catch {
+        // Server-side deletion is complete even when browser storage is unavailable.
+      }
+      await logout();
+      $("#accountStatus").textContent =
+        "退会しました。アプリ内のデータを削除しました。";
+    } catch (error) {
+      if (state.user?.sub !== subject) return;
+      $("#deleteAccountStatus").textContent = error.message;
+    } finally {
+      state.deletingAccount = false;
+      $("#confirmDeleteAccount").disabled = !$("#deleteAccountConfirmed")
+        .checked;
+      $("#cancelDeleteAccount").disabled = false;
+      $("#deleteAccountConfirmed").disabled = false;
+      $("#confirmDeleteAccount").textContent = "削除して退会";
+      $("#deleteAccountForm").removeAttribute("aria-busy");
+    }
+  });
   $("#logoutButton").addEventListener("click", logout);
   $("#profileLogoutButton").addEventListener("click", logout);
   $("#searchForm").addEventListener("submit", async (event) => {

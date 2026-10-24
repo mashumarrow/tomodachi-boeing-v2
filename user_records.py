@@ -136,8 +136,21 @@ def connect_records():
 
 def list_records(subject):
     with connect_records() as connection:
-        rows = connection.execute("SELECT payload FROM visits WHERE user_id = ?", (subject,)).fetchall()
-    return [json.loads(row[0]) for row in rows]
+        rows = connection.execute("""
+            SELECT v.payload, r.payload FROM visits v
+            LEFT JOIN reviews r ON r.user_id = v.user_id AND r.visit_id = v.visit_id
+            WHERE v.user_id = ?
+        """, (subject,)).fetchall()
+    records = []
+    for payload, review_payload in rows:
+        record = json.loads(payload)
+        if review_payload:
+            review = json.loads(review_payload)
+            record["reviewProfile"] = {field: review[field] for field in
+                                      ("nickname", "gradeLabel", "gradeBand", "universityEmailVerified", "verifiedEmailUniversity")
+                                      if field in review}
+        records.append(record)
+    return records
 
 
 def hospital_stay_averages(subject, hospital_ids):
@@ -216,7 +229,7 @@ def get_profile(subject):
     return json.loads(row[0]) if row else None
 
 
-def save_profile(subject, value):
+def save_profile(subject, value, *, require_existing=False):
     if not isinstance(value, dict):
         raise ValueError("プロフィールの形式が正しくありません。")
     university_id = MIYAZAKI_UNIVERSITY_ID
@@ -232,10 +245,20 @@ def save_profile(subject, value):
     profile = {"universityId": university_id, "universityName": UNIVERSITIES[university_id]["name"],
                "grade": grade, "gender": gender, "nickname": nickname.strip()}
     with connect_records() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if require_existing and not connection.execute("SELECT 1 FROM profiles WHERE user_id = ?", (subject,)).fetchone():
+            raise ValueError("プロフィールがありません。もう一度ログインしてください。")
         connection.execute("INSERT INTO profiles (user_id, payload) VALUES (?, ?) "
                            "ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload",
                            (subject, json.dumps(profile, ensure_ascii=False)))
     return profile
+
+
+def delete_account(subject):
+    with connect_records() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for table in ("reviews", "visits", "profiles"):
+            connection.execute(f"DELETE FROM {table} WHERE user_id = ?", (subject,))
 
 
 def validate_record(value):
@@ -361,6 +384,7 @@ def public_review_payload(record, profile, previous=None, verified_email_univers
 def publish_all_reviews(subject=None):
     updated = 0
     with connect_records() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute(f"""
             SELECT v.user_id, v.visit_id, v.payload, p.payload, r.payload
             FROM visits v JOIN profiles p ON p.user_id = v.user_id
@@ -396,6 +420,7 @@ def publish_all_reviews(subject=None):
 def save_record(subject, value, *, verified_email_university=None):
     record = validate_record(value)
     with connect_records() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         sharing = record["reviewSharing"]
         if sharing["published"]:
             profile_row = connection.execute("SELECT payload FROM profiles WHERE user_id = ?", (subject,)).fetchone()

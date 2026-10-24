@@ -55,6 +55,105 @@ class UserRecordTests(unittest.TestCase):
         user_records.save_record("user-a", self.record)
         self.assertEqual(len(user_records.list_records("user-a")), 1)
 
+    def test_own_log_gets_matching_public_profile_without_mutating_the_record(self):
+        self.miyazaki_profile("user-a", "3")
+        self.miyazaki_profile("user-b", "2")
+        user_records.save_record("user-a", self.structured_review(), verified_email_university="doshisha")
+        user_records.save_record("user-b", self.structured_review(), verified_email_university="miyazaki")
+        self.miyazaki_profile("user-a", "4")
+        record = user_records.list_records("user-a")[0]
+        self.assertEqual(record["reviewProfile"], {"nickname": "ひなた", "gradeLabel": "学部3年",
+                                                 "universityEmailVerified": True, "verifiedEmailUniversity": "doshisha"})
+        self.assertEqual(user_records.list_records("user-b")[0]["reviewProfile"]["gradeLabel"], "学部2年")
+        with user_records.connect_records() as connection:
+            payload = connection.execute("SELECT payload FROM visits WHERE user_id = ?", ("user-a",)).fetchone()[0]
+        self.assertNotIn("reviewProfile", json.loads(payload))
+        self.assertNotIn("email", record["reviewProfile"])
+
+    def test_account_settings_update_requires_an_existing_profile_and_preserves_posts(self):
+        self.miyazaki_profile()
+        user_records.save_record("user-a", self.structured_review(), verified_email_university="doshisha")
+        original = user_records.list_reviews("user-a", "clinic:1")
+        updated = user_records.save_profile("user-a", {"nickname": "新しい名前", "grade": "master1",
+                                                        "gender": "prefer_not_to_say", "universityId": "other"},
+                                            require_existing=True)
+        self.assertEqual(updated["nickname"], "新しい名前")
+        self.assertEqual(updated["universityId"], user_records.MIYAZAKI_UNIVERSITY_ID)
+        self.assertEqual(updated["grade"], "master1")
+        self.assertEqual(user_records.list_reviews("user-a", "clinic:1"), original)
+        self.assertEqual(len(user_records.list_records("user-a")), 1)
+        user_records.delete_account("user-a")
+        with self.assertRaises(ValueError):
+            user_records.save_profile("user-a", updated, require_existing=True)
+        with self.assertRaises(ValueError):
+            user_records.save_record("user-a", self.structured_review())
+
+    def test_account_deletion_removes_only_owners_data_and_cannot_be_republished(self):
+        for subject in ("user-a", "user-b"):
+            self.miyazaki_profile(subject)
+            user_records.save_record(subject, self.structured_review())
+        user_records.delete_account("user-a")
+        user_records.delete_account("user-a")
+        self.assertIsNone(user_records.get_profile("user-a"))
+        self.assertEqual(user_records.list_records("user-a"), [])
+        self.assertEqual(len(user_records.list_records("user-b")), 1)
+        self.assertIsNotNone(user_records.get_profile("user-b"))
+        self.assertEqual(len(user_records.list_reviews("user-b", "clinic:1")), 1)
+        self.assertEqual(user_records.publish_all_reviews(), 0)
+        self.assertEqual(user_records.sync_review_email_badges("user-a", "miyazaki"), 0)
+
+    def test_account_deletion_rolls_back_every_table_when_a_delete_fails(self):
+        self.miyazaki_profile()
+        user_records.save_record("user-a", self.structured_review())
+        with user_records.connect_records() as connection:
+            connection.execute("CREATE TRIGGER prevent_profile_delete BEFORE DELETE ON profiles "
+                               "BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            user_records.delete_account("user-a")
+        self.assertIsNotNone(user_records.get_profile("user-a"))
+        self.assertEqual(len(user_records.list_records("user-a")), 1)
+        self.assertEqual(len(user_records.list_reviews("user-a", "clinic:1")), 1)
+
+    def test_account_api_requires_authentication_confirmation_and_uses_token_owner(self):
+        self.miyazaki_profile("user-a")
+        self.miyazaki_profile("user-b")
+        user_records.save_record("user-a", self.structured_review())
+        user_records.save_record("user-b", self.structured_review())
+        app = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
+        thread = threading.Thread(target=app.serve_forever, daemon=True)
+        thread.start()
+        def request(method, path, body):
+            connection = HTTPConnection("127.0.0.1", app.server_port)
+            connection.request(method, path, body=json.dumps(body), headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            result = response.status, json.loads(response.read())
+            connection.close()
+            return result
+        try:
+            with patch("server.authenticated_subject", side_effect=jwt.InvalidTokenError("missing")):
+                self.assertEqual(request("DELETE", "/api/account", {"confirmation": "delete-account"})[0], 401)
+                self.assertEqual(request("PUT", "/api/profile", {})[0], 401)
+            with patch("server.authenticated_subject", return_value="user-a"):
+                for body in ({}, {"confirmation": True}, [], None):
+                    self.assertEqual(request("DELETE", "/api/account", body)[0], 400)
+                self.assertIsNotNone(user_records.get_profile("user-a"))
+                with patch("server.delete_account", side_effect=sqlite3.OperationalError("locked")):
+                    self.assertEqual(request("DELETE", "/api/account", {"confirmation": "delete-account"})[0], 503)
+                self.assertEqual(request("PUT", "/api/profile", {"nickname": "変更後", "grade": "5", "gender": "male"})[0], 200)
+                self.assertEqual(user_records.get_profile("user-a")["nickname"], "変更後")
+                self.assertEqual(request("PUT", "/api/profile", {"nickname": " "})[0], 400)
+                self.assertEqual(request("DELETE", "/api/account", {"confirmation": "delete-account", "user_id": "user-b"}),
+                                 (200, {"deleted": True}))
+                self.assertEqual(request("PUT", "/api/profile", {"nickname": "復元", "grade": "1", "gender": "male"})[0], 403)
+                self.assertEqual(request("DELETE", "/api/account", {"confirmation": "delete-account"})[0], 200)
+            self.assertIsNone(user_records.get_profile("user-a"))
+            self.assertIsNotNone(user_records.get_profile("user-b"))
+            self.assertEqual(len(user_records.list_records("user-b")), 1)
+        finally:
+            app.shutdown()
+            app.server_close()
+            thread.join()
+
     def test_hospital_stay_average_uses_saved_times_and_updates_without_duplicates(self):
         self.miyazaki_profile()
         user_records.save_record("user-a", {**self.record, "stayMinutes": 999})

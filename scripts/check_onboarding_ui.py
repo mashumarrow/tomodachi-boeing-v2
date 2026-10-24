@@ -299,6 +299,189 @@ def check_review_layout(browser, url):
     print("Review layout checks passed for long names, long text, missing fields, zero values and legacy notes")
 
 
+def check_account_settings(browser, url):
+    for width in (320, 375, 1280):
+        for subject in ("test-user", "settings-other"):
+            user_records.save_profile(subject, {"nickname": "ひなた", "grade": "4", "gender": "female"})
+            user_records.save_record(subject, {"id": "settings-visit", "hospitalId": "clinic:1", "hospitalName": "テスト病院",
+                "department": "internal", "plannedAt": "2026-10-21T00:00:00Z", "arrivalAt": "2026-10-21T01:00:00Z",
+                "leaveAt": "2026-10-21T01:30:00Z", "feeAmount": "1200", "reservationStatus": "予約なし",
+                "waitingImpression": "未入力", "reviewVersion": 2, "visitType": "初診", "positivePoints": ["その他"],
+                "sceneText": "保存済みの文章", "reviewSharing": {"published": True}})
+        context = browser.new_context(viewport={"width": width, "height": 820}, timezone_id="Asia/Tokyo")
+        context.route("https://unpkg.com/**", lambda route: route.abort())
+        context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(body=SDK, content_type="application/javascript"))
+        pending_save, pending_delete = [], []
+        def settings_route(route):
+            if route.request.method == "PUT" and not pending_save:
+                pending_save.append(route)
+            else:
+                route.continue_()
+        def delete_route(route):
+            if not pending_delete:
+                pending_delete.append(route)
+            else:
+                route.continue_()
+        context.route("**/api/profile", settings_route)
+        context.route("**/api/account", delete_route)
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script("window.testLoggedIn = true;")
+        page.goto(url)
+        page.locator("#appContent").wait_for(state="visible")
+        page.click('.tab[data-nav="log"]')
+        page.click("#accountButton")
+        page.click("#settingsButton")
+        assert page.locator("#screen-settings").is_visible()
+        assert page.locator(".tabbar").is_hidden()
+        assert page.locator("#settingsNickname").input_value() == "ひなた"
+        assert page.locator("#settingsGrade").input_value() == "4"
+        assert page.locator("#settingsGender").input_value() == "female"
+        page.fill("#settingsNickname", " ")
+        page.click("#settingsSaveButton")
+        assert not pending_save
+        page.fill("#settingsNickname", "こもれび")
+        page.select_option("#settingsGrade", "master2")
+        page.select_option("#settingsGender", "prefer_not_to_say")
+        page.click("#settingsSaveButton")
+        assert page.locator("#settingsSaveButton").is_disabled()
+        assert page.locator("#withdrawButton").is_disabled()
+        assert page.locator("#settingsNickname").is_disabled()
+        pending_save[0].fulfill(status=503, body='{"error":"保存に失敗しました"}', content_type="application/json")
+        page.wait_for_function("!state.savingSettings")
+        assert "保存に失敗" in page.locator("#settingsStatus").inner_text()
+        assert user_records.get_profile("test-user")["nickname"] == "ひなた"
+        page.click("#settingsSaveButton")
+        page.wait_for_function("document.querySelector('#settingsStatus').textContent.includes('変更を保存しました')")
+        assert user_records.get_profile("test-user")["nickname"] == "こもれび"
+        assert user_records.get_profile("test-user")["grade"] == "master2"
+        assert user_records.list_reviews("test-user", "clinic:1")[0]["nickname"] == "ひなた"
+        assert page.locator("#accountNickname").inner_text() == "こもれび"
+        assert page.locator("#accountInitial").inner_text() == "こ"
+        page.click("#settingsBackButton")
+        assert page.locator("#screen-log").is_visible()
+        assert page.locator(".tabbar").is_visible()
+        page.reload()
+        page.locator("#appContent").wait_for(state="visible")
+        page.click("#accountButton")
+        page.click("#settingsButton")
+        assert page.locator("#settingsNickname").input_value() == "こもれび"
+        assert page.locator("#settingsGrade").input_value() == "master2"
+        assert page.locator("#settingsGender").input_value() == "prefer_not_to_say"
+        assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+        page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-account-settings-{width}.png"), full_page=True)
+        page.click("#withdrawButton")
+        assert page.locator("#confirmDeleteAccount").is_disabled()
+        page.click("#cancelDeleteAccount")
+        assert not page.locator("#deleteAccountDialog").is_visible()
+        assert user_records.get_profile("test-user") is not None
+        page.click("#withdrawButton")
+        page.keyboard.press("Escape")
+        assert not page.locator("#deleteAccountDialog").is_visible()
+        page.click("#withdrawButton")
+        page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-withdraw-confirmation-{width}.png"))
+        page.check("#deleteAccountConfirmed")
+        page.click("#confirmDeleteAccount")
+        assert page.locator("#confirmDeleteAccount").is_disabled()
+        assert page.locator("#cancelDeleteAccount").is_disabled()
+        page.keyboard.press("Escape")
+        assert page.locator("#deleteAccountDialog").is_visible()
+        pending_delete[0].fulfill(status=503, body='{"error":"削除に失敗しました"}', content_type="application/json")
+        page.wait_for_function("!state.deletingAccount")
+        assert "削除に失敗" in page.locator("#deleteAccountStatus").inner_text()
+        assert user_records.get_profile("test-user") is not None
+        page.evaluate("""() => {
+            localStorage.setItem('campusClinicActiveVisit:test-user', '{"id":"draft"}');
+            localStorage.setItem('campusClinicActiveVisit:someone-else', 'keep');
+        }""")
+        page.click("#confirmDeleteAccount")
+        page.locator("#loginScreen").wait_for(state="visible")
+        page.wait_for_function("!state.loggingOut")
+        assert user_records.get_profile("test-user") is None
+        assert user_records.list_records("test-user") == []
+        assert len(user_records.list_records("settings-other")) == 1
+        assert len(user_records.list_reviews("settings-other", "clinic:1")) == 1
+        assert page.evaluate("localStorage.getItem('campusClinicActiveVisit:test-user')") is None
+        assert page.evaluate("localStorage.getItem('campusClinicActiveVisit:someone-else')") == "keep"
+        assert page.locator("#settingsNickname").input_value() == ""
+        assert page.locator("#monthDetails").inner_text() == ""
+        assert page.evaluate("sessionStorage.getItem('campusClinicSignedOut')") == "1"
+        page.goto(f"{url}?code=test-code&state=test-state")
+        page.locator("#profileScreen").wait_for(state="visible")
+        assert page.locator("#appContent").is_hidden()
+        assert errors == [], errors
+        context.close()
+        with user_records.connect_records() as connection:
+            for table in ("reviews", "visits", "profiles"):
+                connection.execute(f"DELETE FROM {table}")
+    print("Account settings passed: validation, pending save, retry, persistence, confirmation, deletion, logout and fresh registration")
+
+
+def check_personal_log_layout(browser, url):
+    fixtures = [
+        {"id": "log-layout-1", "hospitalId": "clinic:1", "hospitalName": "とても長い名前の病院" * 3,
+         "department": "internal", "arrivalAt": "2026-10-21T14:30:00Z", "leaveAt": "2026-10-21T15:30:00Z",
+         "stayMinutes": 60, "feeAmount": "1840", "visitType": "初診", "reservationStatus": "予約あり",
+         "positivePoints": ["説明が分かりやすい", "質問しやすい"], "sceneText": "薬の説明を紙に書いてくれた。",
+         "adviceText": "longtext" * 30, "reviewSharing": {"published": True},
+         "reviewProfile": {"nickname": "あ" * 20, "gradeLabel": "学部2年", "universityEmailVerified": True,
+                           "verifiedEmailUniversity": "doshisha"}},
+        {"id": "log-layout-2", "hospitalId": "clinic:2", "hospitalName": '<img src=x onerror="window.logInjected=true">',
+         "department": "internal", "arrivalAt": "2026-10-21T01:00:00Z", "leaveAt": "2026-10-21T01:30:00Z",
+         "stayMinutes": 30, "feeAmount": "0", "reservationStatus": "予約なし", "note": "以前の形式の記録",
+         "reviewSharing": {"published": True}},
+    ]
+    for width in (320, 375, 1280):
+        context = browser.new_context(viewport={"width": width, "height": 820}, timezone_id="Asia/Tokyo")
+        context.route("https://unpkg.com/**", lambda route: route.abort())
+        context.route("https://cdn.auth0.com/**", lambda route: route.fulfill(body=SDK, content_type="application/javascript"))
+        context.route("**/api/profile", lambda route: route.fulfill(body=json.dumps({"profile": {
+            "nickname": "ひなた", "grade": "4", "universityId": user_records.MIYAZAKI_UNIVERSITY_ID,
+            "universityName": "宮崎大学"}}), content_type="application/json"))
+        context.route("**/api/visits", lambda route: route.fulfill(body='{"visits":[]}', content_type="application/json"))
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.add_init_script("window.testLoggedIn = true;")
+        page.goto(url)
+        page.locator("#appContent").wait_for(state="visible")
+        page.wait_for_function("state.emailVerification && state.emailVerification.status !== 'checking'")
+        page.evaluate("""visits => {
+            state.visits = visits; state.calendarDate = new Date(2026, 9, 21); state.selectedDate = '2026-10-21';
+            state.recordView = 'month'; renderCalendar(); navigate('log');
+        }""", fixtures)
+        cards = page.locator("#monthDetails .personal-record.community-card")
+        assert cards.count() == 2
+        first = cards.first
+        assert first.locator(".record-hospital h4").inner_text() == fixtures[0]["hospitalName"]
+        assert cards.locator(".community-card-header, .review-avatar, .review-author, .review-verified, .review-visibility").count() == 0
+        assert "公開中" not in page.locator("#monthDetails").inner_text()
+        assert first.locator(".review-tags li").all_text_contents() == ["初診", "予約あり", "説明が分かりやすい", "質問しやすい"]
+        assert first.locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 23:30", "2026年10月22日 00:30"]
+        assert first.locator(".review-metrics dt").all_text_contents() == ["院内滞在", "費用"]
+        assert first.locator(".review-metrics dd").all_text_contents() == ["60分", "1,840円"]
+        assert cards.nth(1).locator(".review-metrics dd").all_text_contents() == ["30分", "0円"]
+        assert cards.nth(1).locator(".review-note").inner_text() == "以前の形式の記録"
+        assert cards.nth(1).locator(".record-hospital img").count() == 0
+        assert not page.evaluate("Boolean(window.logInjected)")
+        assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+        assert cards.locator(".review-author, .record-hospital, .review-note, .review-metrics dd").evaluate_all(
+            "elements => elements.every(element => element.scrollWidth <= element.clientWidth + 1)")
+        expected = first.inner_html()
+        first.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-log-card-{width}.png"))
+        page.click('[data-record-view="day"]')
+        page.click('[data-date="2026-10-21"]')
+        assert page.locator("#dayDetails .personal-record").first.inner_html() == expected
+        page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-day-log-{width}.png"))
+        page.evaluate("state.emailVerification = {status: 'email_unverified', universityEmailVerified: false}; renderCalendar();")
+        assert page.locator("#dayDetails .personal-record").first.locator(".review-verified").count() == 0
+        assert page.locator("#dayDetails .personal-record").nth(1).locator(".review-verified").count() == 0
+        assert errors == [], errors
+        context.close()
+    print("Personal log cards passed: shared layout, month/day parity, hidden identity and status, zero fee and escaping")
+
+
 def check_fixed_university_registration(browser, url):
     for width in (320, 375, 1280):
         legacy = {"universityId": "F126310107564", "universityName": "同志社大学",
@@ -351,7 +534,7 @@ def check_fixed_university_registration(browser, url):
         search_at_nine(page)
         card = assert_hospital_estimate(page, hospital_id, 45)
         card.locator('[data-detail]').click()
-        review = page.locator(".community-card").filter(has_text="自分の口コミ・公開中")
+        review = page.locator("#hospitalReviews .community-card.review-own")
         review.wait_for()
         assert review.locator(".review-verified").get_attribute("aria-label") == "同志社大学メール認証済み"
         assert review.locator(".review-verified").inner_text() == "認証済み"
@@ -524,7 +707,7 @@ def check_manual_time_entry(browser, url):
         page.click('#completionForm button[type="submit"]')
         page.locator("#screen-log.active").wait_for()
         assert len(saved) == 1 and saved[0]["stayMinutes"] == 60
-        assert page.locator(".personal-record .stay-time").first.inner_text() == "60分"
+        assert page.locator(".personal-record .review-metrics > div").filter(has_text="院内滞在").first.locator("dd").inner_text() == "60分"
         assert errors == [], errors
         context.close()
     print("Manual time checks passed: no apply, midnight, invalid range, cleared end, draft preservation and save sync")
@@ -724,7 +907,7 @@ def main():
                     assert page.locator("#accountMenu").is_hidden()
                     assert page.locator("#accountButton").evaluate("element => element === document.activeElement")
                     page.press("#accountButton", "ArrowDown")
-                    assert page.locator("#logoutButton").evaluate("element => element === document.activeElement")
+                    assert page.locator("#settingsButton").evaluate("element => element === document.activeElement")
                     page.click(".topbar h1")
                     assert page.locator("#accountMenu").is_hidden()
                     page.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-search-{width}.png"))
@@ -790,7 +973,7 @@ def main():
                     page.click('#completionForm button[type="submit"]')
                     page.locator("#screen-log.active").wait_for()
                     assert user_records.list_records("test-user")[0]["stayMinutes"] == 30
-                    assert page.locator("#monthDetails .stay-time").first.inner_text() == "30分"
+                    assert page.locator("#monthDetails .review-metrics > div").filter(has_text="院内滞在").first.locator("dd").inner_text() == "30分"
                     assert page.locator("#monthDetails .review-note").first.inner_text() == note
                     assert page.locator("#monthDetails .review-note img").count() == 0
                     first_review = user_records.list_reviews("test-user", hospital_id)[0]
@@ -800,7 +983,7 @@ def main():
                     assert first_review["leaveAt"] == user_records.list_records("test-user")[0]["leaveAt"]
                     assert user_records.list_records("test-user")[0]["reviewSharing"]["published"] is True
                     assert page.locator("#monthDetails [data-unpublish]").count() == 0
-                    assert "口コミを公開中" in page.locator("#monthDetails").inner_text()
+                    assert "公開中" not in page.locator("#monthDetails").inner_text()
                     # Seed a historical private record; the UI no longer offers withdrawal.
                     user_records.unpublish_review("test-user", user_records.list_records("test-user")[0]["id"])
                     assert user_records.list_reviews("test-user", hospital_id) == []
@@ -889,7 +1072,7 @@ def main():
                     page.click('#completionForm button[type="submit"]')
                     page.locator("#screen-log.active").wait_for()
                     assert page.locator("#monthDetails [data-unpublish]").count() == 0
-                    assert "口コミを公開中" in page.locator("#monthDetails").inner_text()
+                    assert "公開中" not in page.locator("#monthDetails").inner_text()
                     page.click('.tab[data-nav="search"]')
                     search_at_nine(page)
                     average_card = assert_hospital_estimate(page, hospital_id, 39)
@@ -901,7 +1084,7 @@ def main():
                     assert page.locator(".metric").filter(has_text="費用").locator("strong").inner_text() == "平均 1,200円"
                     assert page.evaluate("feeEstimate({averageFeeAmount: 0})") == "平均 0円"
                     assert page.evaluate("feeEstimate({averageFeeAmount: 10000000})") == "平均 10,000,000円"
-                    own_review = page.locator(".community-card").filter(has_text="自分の口コミ・公開中")
+                    own_review = page.locator("#hospitalReviews .community-card.review-own")
                     assert "学部4年" in own_review.inner_text()
                     assert "ひなた" in own_review.inner_text()
                     assert "初診" in own_review.inner_text()
@@ -917,7 +1100,7 @@ def main():
                     assert own_review.locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 11:00", "12:00"]
                     assert own_review.locator(".review-body").bounding_box()["y"] < own_review.locator(".review-metrics").bounding_box()["y"]
                     own_review.screenshot(path=str(Path(tempfile.gettempdir()) / f"clinic-review-card-{width}.png"))
-                    other_review = page.locator(".community-card").filter(has_text="宮大生の口コミ")
+                    other_review = page.locator("#hospitalReviews .community-card:not(.review-own):not(.review-private)")
                     assert "学部2年" in other_review.inner_text()
                     assert "1,200" in other_review.inner_text()
                     assert other_review.locator(".review-month").count() == 0
@@ -975,9 +1158,11 @@ def main():
                 check_profile_submission(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_account_logout(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_review_layout(browser, f"http://127.0.0.1:{app.server_port}/")
+                check_personal_log_layout(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_manual_time_entry(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_fixed_university_registration(browser, f"http://127.0.0.1:{app.server_port}/")
                 check_email_badge_sync(browser, f"http://127.0.0.1:{app.server_port}/")
+                check_account_settings(browser, f"http://127.0.0.1:{app.server_port}/")
                 browser.close()
                 print("Onboarding checks passed at 320px, 375px and 1280px")
                 print(f"Screenshots: {tempfile.gettempdir()}/clinic-profile-375.png")

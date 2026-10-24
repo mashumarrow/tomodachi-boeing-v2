@@ -144,6 +144,32 @@ main {
 .account-logout { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border: 0; border-top: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font-size: 14px; text-align: left; }
 .account-logout:hover { background: #f0f5fc; }
 .account-logout img { flex: 0 0 20px; }
+.settings-heading { display: flex; align-items: center; gap: 12px; }
+.settings-heading h2 { margin: 0; font-size: 22px; }
+.settings-heading h2:focus { outline: none; }
+#settingsForm { gap: 18px; margin-top: 28px; }
+#settingsFields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-section-title { padding: 0 0 18px; color: var(--ink); font-size: 16px; font-weight: 700; }
+.settings-university { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.settings-university > span { color: var(--muted); }
+.settings-note, .settings-withdrawal p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.settings-feedback { margin: 0; color: var(--green); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.settings-feedback:empty { display: none; }
+.settings-feedback[data-error="true"] { color: #b42318; }
+.settings-withdrawal { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--line); }
+.settings-withdrawal h3 { font-size: 16px; }
+.danger-outline-button, .danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 10px 16px; border: 1px solid #c0362c; border-radius: 6px; background: #fff; color: #a62f27; font-weight: 600; }
+.danger-outline-button { margin-top: 16px; }
+.danger-button { background: #b83129; color: #fff; }
+.danger-button:focus-visible, .danger-outline-button:focus-visible { outline: 2px solid #b83129; outline-offset: 3px; }
+.withdraw-dialog { width: min(416px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #fff; overflow-y: auto; }
+.withdraw-dialog::backdrop { background: rgba(23, 33, 47, 0.46); }
+.withdraw-dialog h2 { font-size: 20px; }
+.withdraw-dialog p { color: var(--muted); font-size: 13px; line-height: 1.8; }
+.withdraw-confirmation { display: flex; align-items: flex-start; gap: 10px; margin: 20px 0; font-size: 13px; line-height: 1.7; }
+.withdraw-confirmation input { flex: 0 0 20px; width: 20px; min-height: 20px; height: 20px; margin: 2px 0 0; accent-color: #b83129; }
+.withdraw-dialog-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.withdraw-dialog-actions button { min-width: 0; padding-inline: 8px; font-size: 13px; }
 
 .search-panel {
   display: grid;
@@ -887,11 +913,7 @@ body:has(#loginScreen:not([hidden])) .access-status {
 }
 
 .monthly-panel {
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: 0 6px 20px rgba(30, 42, 62, 0.07);
+  min-width: 0;
 }
 
 .month-picker {
@@ -1081,69 +1103,9 @@ body:has(#loginScreen:not([hidden])) .access-status {
   gap: 10px;
 }
 
-.personal-record {
-  border-top: 1px solid #edf0f5;
-  padding-top: 14px;
-}
-
-.personal-record:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.personal-record header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.personal-record h4 {
-  margin: 0;
-  font-size: 17px;
-}
-
-.record-date {
-  display: block;
-  margin-bottom: 3px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.stay-time {
-  flex: 0 0 auto;
-  color: #173762;
-  font-size: 24px;
-}
-
-.stay-time small {
-  margin-left: 2px;
-  font-size: 11px;
-}
-
-.personal-record dl {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin: 0;
-  padding: 12px;
-  border-radius: 7px;
-  background: #f8fafc;
-}
-
-.personal-record dt {
-  margin-bottom: 2px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.personal-record dd {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 700;
-}
+.record-hospital { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.record-hospital h4 { margin: 0 0 4px; color: var(--ink); font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.personal-record .review-visit-times { margin-top: 0; }
 
 .empty-record {
   display: grid;
@@ -1293,17 +1255,12 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .review-author { display: grid; min-width: 0; gap: 2px; line-height: 1.6; }
 .review-author strong { color: var(--ink); font-size: 15px; }
 .review-author > span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.review-visibility { display: block; margin-bottom: 12px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.review-own .review-visibility { color: var(--blue); }
-.review-private .review-visibility { color: #6e7684; }
 .review-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 12px; margin: 18px 0 0; padding-top: 14px; border-top: 1px solid #edf0f5; }
 .review-metrics div { display: grid; min-width: 0; align-content: start; gap: 4px; }
 .review-metrics dt { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .review-metrics dd { margin: 0; color: #26364b; font-size: 17px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
 .review-metrics small { margin-left: 3px; font-size: 11px; font-weight: 400; }
 .community-card .review-note:last-child { margin-bottom: 0; }
-.record-sharing { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
-.record-sharing > span { color: var(--muted); font-size: 11px; }
 
 .review-step { min-width: 0; margin: 0; padding: 20px 0 0; border: 0; border-top: 1px solid var(--line); }
 .review-step legend { max-width: 100%; padding: 0 0 8px; color: var(--ink); font-size: 15px; font-weight: 700; line-height: 1.7; }
@@ -1402,6 +1359,8 @@ body:has(#loginScreen:not([hidden])) .access-status {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 18px 38px rgba(30, 42, 62, 0.2);
 }
+
+.tabbar[hidden] { display: none; }
 
 .tab {
   min-height: 44px;
