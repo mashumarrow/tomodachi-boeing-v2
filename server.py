@@ -358,5 +358,5 @@ if __name__ == "__main__":
     except psycopg.Error:
         raise SystemExit("PostgreSQLへの接続に失敗しました。DATABASE_URLとDBの起動状態を確認してください。") from None
     print(f"Published historical reviews: {publish_all_reviews()}")
-    print(f"Campus Clinic Finder: http://{HOST}:{PORT}")
+    print(f"Miyacare Link: http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST, PORT), AppHandler).serve_forever()
