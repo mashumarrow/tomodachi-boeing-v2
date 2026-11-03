@@ -551,7 +551,7 @@ def check_fixed_university_registration(browser, url):
         assert review.locator(".review-verified").get_attribute("aria-label") == "同志社大学メール認証済み"
         assert review.locator(".review-verified").inner_text() == "認証済み"
         badge_image = review.locator(".review-verified img")
-        assert badge_image.get_attribute("src") == "assets/universities/miyazaki-symbol.png"
+        assert badge_image.get_attribute("src") == "assets/icons/email-verified.svg"
         badge_image.evaluate("image => image.decode()")
         assert badge_image.evaluate("image => image.naturalWidth > 0")
         assert review.locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 10:00", "10:45"]

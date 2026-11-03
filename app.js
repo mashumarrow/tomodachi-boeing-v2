@@ -1508,7 +1508,7 @@ function reviewVerificationBadge(post) {
   if (!university) return "";
   const label = `${university}メール認証済み`;
   const description = `${label}。大学メールの確認を示し、大学による公式認定ではありません。`;
-  return `<span class="review-verified review-university-badge" role="img" aria-label="${label}" title="${description}"><img src="assets/universities/miyazaki-symbol.png" alt="" width="24" height="24" /><span class="review-verification-label" aria-hidden="true">認証済み</span></span>`;
+  return `<span class="review-verified review-university-badge" role="img" aria-label="${label}" title="${description}"><img src="assets/icons/email-verified.svg" alt="" width="24" height="24" /><span class="review-verification-label" aria-hidden="true">認証済み</span></span>`;
 }
 
 function reviewContentMarkup(post, { showAuthor = true } = {}) {
