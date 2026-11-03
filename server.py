@@ -26,7 +26,7 @@ PORT = int(os.environ.get("PORT", "8000"))
 PUBLIC_FILES = {"/", "/index.html", "/app.js", "/styles.css", "/ui.generated.css",
                 "/assets/icons/log-out.svg", "/assets/icons/settings.svg", "/assets/icons/trash-2.svg",
                 "/assets/icons/arrow-left.svg", "/assets/icons/mango.png",
-                "/assets/universities/miyazaki-symbol.png"}
+                "/assets/icons/email-verified.svg"}
 
 
 def haversine(latitude, longitude, target_latitude, target_longitude):

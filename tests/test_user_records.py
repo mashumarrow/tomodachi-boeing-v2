@@ -995,16 +995,18 @@ class UserRecordTests(unittest.TestCase):
         try:
             with patch.multiple(user_records, DOMAIN="tenant.auth0.com", CLIENT_ID="client", AUDIENCE="api"):
                 for path, expected in (("/api/visits", 401), ("/data/user-records.sqlite3", 404),
-                                       ("/.env", 404), ("/user_records.py", 404), ("/", 200)):
+                                       ("/.env", 404), ("/user_records.py", 404),
+                                       ("/assets/universities/miyazaki-symbol.png", 404), ("/", 200)):
                     connection = HTTPConnection("127.0.0.1", server.server_port)
                     connection.request("GET", path)
                     response = connection.getresponse()
                     self.assertEqual(response.status, expected, path)
                     response.read()
                     connection.close()
-                for method in ("GET", "HEAD"):
+                for method, path in ((method, path) for method in ("GET", "HEAD")
+                                     for path in ("/assets/icons/log-out.svg", "/assets/icons/email-verified.svg")):
                     connection = HTTPConnection("127.0.0.1", server.server_port)
-                    connection.request(method, "/assets/icons/log-out.svg")
+                    connection.request(method, path)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
@@ -1013,7 +1015,7 @@ class UserRecordTests(unittest.TestCase):
                     else:
                         self.assertEqual(response.read(), b"")
                     connection.close()
-                for path in ("/assets/universities/miyazaki-symbol.png", "/assets/icons/mango.png"):
+                for path in ("/assets/icons/mango.png",):
                     for method in ("GET", "HEAD"):
                         connection = HTTPConnection("127.0.0.1", server.server_port)
                         connection.request(method, path)
