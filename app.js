@@ -1508,7 +1508,7 @@ function reviewVerificationBadge(post) {
   if (!university) return "";
   const label = `${university}メール認証済み`;
   const description = `${label}。大学メールの確認を示し、大学による公式認定ではありません。`;
-  return `<span class="review-verified review-university-badge" role="img" aria-label="${label}" title="${description}"><img src="assets/icons/email-verified.svg" alt="" width="24" height="24" /><span class="review-verification-label" aria-hidden="true">認証済み</span></span>`;
+  return `<span class="review-verified review-university-badge" role="img" aria-label="${label}" title="${description}"><svg class="review-verification-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="#e0f3e9" stroke="#126b4a" stroke-width="1.8"/><path d="m7.5 12 3 3 6-6" stroke="#126b4a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="review-verification-label" aria-hidden="true">認証済み</span></span>`;
 }
 
 function reviewContentMarkup(post, { showAuthor = true } = {}) {

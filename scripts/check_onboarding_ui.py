@@ -275,8 +275,9 @@ def check_review_layout(browser, url):
         badge = cards.nth(0).locator(".community-card-header .review-verified")
         assert badge.get_attribute("aria-label") == "宮崎大学メール認証済み"
         assert badge.inner_text() == "認証済み"
-        badge.locator("img").evaluate("image => image.decode()")
-        assert badge.locator("img").evaluate("image => image.naturalWidth > 0 && image.naturalHeight > 0")
+        assert badge.locator("img").count() == 0
+        assert badge.locator("svg.review-verification-icon").is_visible()
+        assert badge.locator("svg circle, svg path").count() == 2
         assert "大学による公式認定ではありません" in badge.get_attribute("title")
         assert cards.nth(1).locator(".review-verified").count() == 0
         assert cards.nth(0).locator(".community-card-header").evaluate("""header => {
@@ -550,10 +551,10 @@ def check_fixed_university_registration(browser, url):
         review.wait_for()
         assert review.locator(".review-verified").get_attribute("aria-label") == "同志社大学メール認証済み"
         assert review.locator(".review-verified").inner_text() == "認証済み"
-        badge_image = review.locator(".review-verified img")
-        assert badge_image.get_attribute("src") == "assets/icons/email-verified.svg"
-        badge_image.evaluate("image => image.decode()")
-        assert badge_image.evaluate("image => image.naturalWidth > 0")
+        assert review.locator(".review-verified img").count() == 0
+        badge_icon = review.locator(".review-verified svg.review-verification-icon")
+        assert badge_icon.is_visible()
+        assert badge_icon.get_attribute("viewBox") == "0 0 24 24"
         assert review.locator(".review-visit-times time").all_text_contents() == ["2026年10月21日 10:00", "10:45"]
         assert user_records.get_profile("test-user")["universityId"] == user_records.MIYAZAKI_UNIVERSITY_ID
         assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")

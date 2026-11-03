@@ -1331,7 +1331,7 @@ body:has(#loginScreen:not([hidden])) .access-status {
 .review-verified { display: inline-block; max-width: 100%; margin-top: 12px; padding: 4px 7px; border-radius: 4px; color: #126b4a; background: #edf8f2; font-size: 10px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
 .review-header-meta { display: grid; justify-items: end; align-content: center; gap: 6px; }
 .review-university-badge { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; margin-top: 0; padding: 3px 6px; border: 1px solid #dcebe3; background: #f5faf7; white-space: nowrap; }
-.review-university-badge img { display: block; flex: 0 0 24px; width: 24px; height: 24px; object-fit: contain; }
+.review-verification-icon { display: block; flex: 0 0 24px; width: 24px; height: 24px; }
 .review-verification-label { font-size: 11px; }
 .review-month { display: grid; gap: 3px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; text-align: right; }
 .review-month time { color: #536176; white-space: nowrap; }
